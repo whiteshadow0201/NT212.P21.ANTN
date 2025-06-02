@@ -1,0 +1,6 @@
+<project version="4">
+  <component name="Black">
+    <option name="sdkName" value="pt_cuda_11.8" />
+  </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="pt_cuda_11.8" project-jdk-type="Python SDK" />
+</project>
