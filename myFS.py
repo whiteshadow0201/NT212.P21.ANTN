@@ -163,9 +163,9 @@ class MyFS:
         self.superblock_key = get_random_bytes(32)  # Khóa ngẫu nhiên để mã hóa siêu khối
         encrypted_key = aes_encrypt(self.superblock_key, password_key)
 
-        key_path = input("Enter path to store MyFS.key on removable disk: ").strip()
-        with open(key_path, 'wb') as f:
-            f.write(encrypted_key)
+        key_path = input("Enter filename to store MyFS key on removable disk (without extension): ").strip()
+        with open(key_path+ ".key", 'wb') as f:
+            f.write(encrypted_key )
 
         # Tạo khóa bí mật TOTP
         totp_secret = pyotp.random_base32()
