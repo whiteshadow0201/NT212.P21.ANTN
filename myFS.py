@@ -191,7 +191,7 @@ class MyFS:
             # Khởi tạo cửa sổ tkinter trước
             window = tk.Tk()
             window.title("Scan QR Code for MyFS TOTP")
-            window.geometry("400x500")  # Kích thước cửa sổ
+            window.geometry("500x600")  # Kích thước cửa sổ
 
             # Chuyển đổi hình ảnh QR thành định dạng hiển thị trong tkinter
             bio = BytesIO()
@@ -508,7 +508,7 @@ class MyFS:
             'restore': self.restore_file,
             'setpass': self.set_volume_password,
             'chpass': self.change_file_password,
-            'exit': exit
+            'exit': sys.exit(0)
         }
         while True:
             cmd = input(
