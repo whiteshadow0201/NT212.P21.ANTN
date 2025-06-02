@@ -9,6 +9,11 @@ from getpass import getpass
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 import sys
+import pyotp
+import qrcode
+import tkinter as tk
+from PIL import Image, ImageTk
+from io import BytesIO
 MYFS_FILE = 'MyFS.DRI'
 BLOCK_SIZE = 16  # AES block size
 
@@ -155,18 +160,77 @@ class MyFS:
             print("Passwords do not match or empty. Try again.")
 
         password_key = derive_key(self.volume_password)
-        self.superblock_key = get_random_bytes(32)
+        self.superblock_key = get_random_bytes(32)  # Khóa ngẫu nhiên để mã hóa siêu khối
         encrypted_key = aes_encrypt(self.superblock_key, password_key)
 
         key_path = input("Enter path to store MyFS.key on removable disk: ").strip()
         with open(key_path, 'wb') as f:
             f.write(encrypted_key)
 
-        machine_uuid = get_machine_uuid()
+        # Tạo khóa bí mật TOTP
+        totp_secret = pyotp.random_base32()
         self.superblock = {
             'files': [],
-            'machine_uuid': machine_uuid
+            'machine_uuid': get_machine_uuid(),
+            'totp_secret': totp_secret  # Lưu khóa TOTP vào siêu khối
         }
+
+        # Tạo URI cho TOTP
+        totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
+            name="MyFS Volume",
+            issuer_name="MyFS"
+        )
+
+        # Tạo hình ảnh QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(totp_uri)
+        qr.make(fit=True)
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+
+        try:
+            # Khởi tạo cửa sổ tkinter trước
+            window = tk.Tk()
+            window.title("Scan QR Code for MyFS TOTP")
+            window.geometry("400x500")  # Kích thước cửa sổ
+
+            # Chuyển đổi hình ảnh QR thành định dạng hiển thị trong tkinter
+            bio = BytesIO()
+            qr_image.save(bio, format="PNG")
+            photo = ImageTk.PhotoImage(Image.open(bio))
+
+            # Hiển thị hướng dẫn
+            label = tk.Label(
+                window,
+                text="Scan this QR code with Microsoft Authenticator\nor manually enter the secret: " + totp_secret,
+                wraplength=350,
+                justify="center",
+                font=("Arial", 12)
+            )
+            label.pack(pady=10)
+
+            # Hiển thị hình ảnh QR code
+            qr_label = tk.Label(window, image=photo)
+            qr_label.pack(pady=10)
+
+            # Nút đóng cửa sổ
+            button = tk.Button(window, text="OK", command=window.destroy, font=("Arial", 12))
+            button.pack(pady=10)
+
+            # Giữ tham chiếu đến ảnh để tránh bị garbage collected
+            qr_label.image = photo
+
+            # Chạy vòng lặp chính của tkinter để hiển thị cửa sổ
+            window.mainloop()
+
+        except tk.TclError as e:
+            # Nếu GUI không khả dụng, lưu QR code thành file
+            print(f"[!] GUI not available: {e}")
+            qr_path = "totp_qr.png"
+            qr_image.save(qr_path)
+            print(f"[*] QR code saved to '{qr_path}'. Scan it with Microsoft Authenticator.")
+            print(f"[*] Or manually enter this secret: {totp_secret}")
+            input("Press Enter after scanning the QR code or entering the secret...")
+
         self.write_superblock()
         print("[+] Volume formatted and encrypted.")
 
@@ -208,13 +272,25 @@ class MyFS:
                 if 'machine_uuid' not in sb or sb['machine_uuid'] != current_machine_uuid:
                     print("[!] This volume can only be accessed on the machine where it was created.")
                     sys.exit(1)
+
+                # Kiểm tra mã TOTP
+                if 'totp_secret' in sb:
+                    totp = pyotp.TOTP(sb['totp_secret'])
+                    totp_code = input("Enter TOTP code from Microsoft Authenticator: ")
+                    if not totp.verify(totp_code):
+                        print("[!] Invalid TOTP code.")
+                        continue
+                else:
+                    print("[!] TOTP secret not found in superblock. Volume may be corrupted.")
+                    sys.exit(1)
+
                 self.volume_password = pwd
                 self.key = password_key
                 self.superblock = sb
                 print("Welcome to MyFS.")
                 return
             except Exception:
-                print("[!] Decryption failed, wrong key or corrupted volume.")
+                print("[!] Decryption failed or invalid TOTP code.")
                 continue
         print("[!] Too many wrong password attempts.")
         sys.exit(1)
