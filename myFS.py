@@ -508,7 +508,7 @@ class MyFS:
             'restore': self.restore_file,
             'setpass': self.set_volume_password,
             'chpass': self.change_file_password,
-            'exit': sys.exit(0)
+            'exit': sys.exit
         }
         while True:
             cmd = input(
@@ -540,6 +540,8 @@ class MyFS:
 def main():
     fs = MyFS()
     fs.run()
+    print("[+] run() function is called")
+
 
 
 if __name__ == "__main__":
