@@ -428,7 +428,7 @@ class MyFS:
             'import': self.import_file,
             'export': self.export_file,
             'delete': self.delete_file,
-            'permdelete': self.permanently_delete_file,
+            'pdelete': self.permanently_delete_file,
             'restore': self.restore_file,
             'setpass': self.set_volume_password,
             'chpass': self.change_file_password,
@@ -445,7 +445,7 @@ class MyFS:
                 "|  import      - Import a file into the volume with encryption       |\n"
                 "|  export      - Export a file from the volume to the filesystem     |\n"
                 "|  delete      - Soft delete a file (recoverable)                    |\n"
-                "|  permdelete  - Permanently delete a file and overwrite its data    |\n"
+                "|  pdelete     - Permanently delete a file and overwrite its data    |\n"
                 "|  restore     - Restore a soft-deleted file                         |\n"
                 "|  setpass     - Change the volume's password                        |\n"
                 "|  chpass      - Change the password of a specific file              |\n"
