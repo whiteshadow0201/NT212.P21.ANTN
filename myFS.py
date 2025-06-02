@@ -540,7 +540,6 @@ class MyFS:
 def main():
     fs = MyFS()
     fs.run()
-    print("[+] run() function is called")
 
 
 
