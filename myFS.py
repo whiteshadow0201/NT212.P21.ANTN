@@ -98,93 +98,53 @@ def aes_decrypt(enc_bytes, key):
     return unpad(padded)
 
 
-def get_machine_uuid():
-    """Retrieve a stable machine UUID without using MAC address."""
+def get_bios_uuid():
     system = platform.system().lower()
     print(f"[DEBUG] Detecting system: {system}")
 
     if system == "windows":
         try:
-            import winreg
-            reg_key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Microsoft\Cryptography"
+            output = subprocess.check_output(
+                ["wmic", "csproduct", "get", "UUID"],
+                text=True
             )
-            machine_guid = winreg.QueryValueEx(reg_key, "MachineGuid")[0]
-            winreg.CloseKey(reg_key)
-            print(f"[DEBUG] Using Windows MachineGuid: {machine_guid}")
-            return machine_guid
+            # UUID
+            # XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+            lines = output.strip().split('\n')
+            if len(lines) >= 2:
+                uuid = lines[1].strip()
+                if uuid and uuid != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                    print(f"[DEBUG] Windows BIOS UUID: {uuid}")
+                    return uuid
         except Exception as e:
-            print(f"[DEBUG] Failed to get Windows MachineGuid: {e}")
+            print(f"[DEBUG] Failed to get Windows BIOS UUID: {e}")
 
     elif system == "linux":
         try:
-            for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"]:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        machine_id = f.read().strip()
-                        if machine_id:
-                            print(f"[DEBUG] Using Linux machine-id from {path}: {machine_id}")
-                            return machine_id
+            output = subprocess.check_output(
+                ["dmidecode", "-s", "system-uuid"],
+                text=True,
+                stderr=subprocess.DEVNULL
+            ).strip()
+            if output and output != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                print(f"[DEBUG] Linux BIOS UUID: {output}")
+                return output
         except Exception as e:
-            print(f"[DEBUG] Failed to get Linux machine-id: {e}")
+            print(f"[DEBUG] Failed to get Linux BIOS UUID: {e}")
 
-    elif system == "darwin":  # macOS
+    elif system == "darwin":
         try:
             output = subprocess.check_output(
                 ["system_profiler", "SPHardwareDataType"],
                 text=True
             )
-            match = re.search(r"Hardware UUID:\s*([0-9a-fA-F-]+)", output)
+            match = re.search(r"Hardware UUID:\s*([0-9A-Fa-f-]+)", output)
             if match:
-                machine_uuid = match.group(1)
-                print(f"[DEBUG] Using macOS IOPlatformUUID: {machine_uuid}")
-                return machine_uuid
+                uuid = match.group(1)
+                print(f"[DEBUG] macOS Hardware UUID: {uuid}")
+                return uuid
         except Exception as e:
-            print(f"[DEBUG] Failed to get macOS IOPlatformUUID: {e}")
-
-    # Fallback: Hash system-specific info (hostname, platform, and disk info if available)
-    try:
-        system_info = f"{platform.node()}{platform.platform()}"
-        # Add disk serial number if available
-        if system == "windows":
-            try:
-                output = subprocess.check_output(
-                    ["wmic", "diskdrive", "get", "serialnumber"],
-                    text=True
-                )
-                serial = output.split('\n')[1].strip()
-                system_info += serial
-            except Exception:
-                pass
-        elif system == "linux":
-            try:
-                output = subprocess.check_output(
-                    ["lsblk", "-d", "-o", "SERIAL"],
-                    text=True
-                )
-                serial = output.split('\n')[1].strip()
-                system_info += serial
-            except Exception:
-                pass
-        elif system == "darwin":
-            try:
-                output = subprocess.check_output(
-                    ["diskutil", "info", "/"],
-                    text=True
-                )
-                match = re.search(r"Volume UUID:\s*([0-9a-fA-F-]+)", output)
-                if match:
-                    system_info += match.group(1)
-            except Exception:
-                pass
-        machine_uuid = hashlib.sha256(system_info.encode('utf-8')).hexdigest()
-        print(f"[DEBUG] Using fallback hashed system info: {machine_uuid}")
-        return machine_uuid
-    except Exception as e:
-        print(f"[DEBUG] Fallback failed: {e}")
-        # Raise an error instead of using a random UUID
-        raise RuntimeError("Unable to generate a reliable machine UUID")
+            print(f"[DEBUG] Failed to get macOS Hardware UUID: {e}")
 
 class MyFS:
     def __init__(self):
@@ -219,7 +179,7 @@ class MyFS:
         totp_secret = pyotp.random_base32()
         self.superblock = {
             'files': [],
-            'machine_uuid': get_machine_uuid(),
+            'bios_uuid': get_bios_uuid(),
             'totp_secret': totp_secret  # Lưu khóa TOTP vào siêu khối
         }
 
@@ -316,8 +276,8 @@ class MyFS:
             try:
                 decrypted = aes_decrypt(encrypted, self.superblock_key)
                 sb = json.loads(decrypted.decode('utf-8'))
-                current_machine_uuid = get_machine_uuid()
-                if 'machine_uuid' not in sb or sb['machine_uuid'] != current_machine_uuid:
+                current_bios_uuid = get_bios_uuid()
+                if 'bios_uuid' not in sb or sb['bios_uuid'] != current_bios_uuid:
                     print("[!] This volume can only be accessed on the machine where it was created.")
                     sys.exit(1)
 
