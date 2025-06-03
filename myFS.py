@@ -46,7 +46,6 @@ def aes_decrypt(enc_bytes, key):
 
 def get_bios_uuid():
     system = platform.system().lower()
-    print(f"[DEBUG] Detecting system: {system}")
 
     try:
         if system == "windows":
@@ -58,7 +57,6 @@ def get_bios_uuid():
             if len(lines) >= 2:
                 uuid = lines[1]
                 if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
-                    print(f"[DEBUG] Windows BIOS UUID: {uuid}")
                     return uuid
 
         elif system == "linux":
@@ -68,7 +66,6 @@ def get_bios_uuid():
                 stderr=subprocess.DEVNULL
             ).strip()
             if output and output.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
-                print(f"[DEBUG] Linux BIOS UUID: {output}")
                 return output
 
         elif system == "darwin":
@@ -80,17 +77,15 @@ def get_bios_uuid():
             if match:
                 uuid = match.group(1)
                 if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
-                    print(f"[DEBUG] macOS Hardware UUID: {uuid}")
                     return uuid
 
     except subprocess.CalledProcessError as e:
-        print(f"[DEBUG] Command failed: {e}")
+        pass
     except FileNotFoundError as e:
-        print(f"[DEBUG] Command not found: {e}")
+        pass
     except Exception as e:
-        print(f"[DEBUG] Unexpected error: {e}")
+        pass
 
-    print("[DEBUG] BIOS UUID not found or invalid")
     return None
 
 
@@ -282,8 +277,7 @@ class MyFS:
                 decrypted = aes_decrypt(encrypted, self.superblock_key)
                 sb = json.loads(decrypted.decode('utf-8'))
                 current_bios_uuid = get_bios_uuid()
-                print("Current BIOS UUID: ", current_bios_uuid)
-                print("Bios UUID: ", sb['bios_uuid'])
+
 
                 if 'bios_uuid' not in sb or sb['bios_uuid'] != current_bios_uuid:
                     messagebox.showerror("Error", "This volume can only be accessed on the machine where it was created.")
