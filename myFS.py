@@ -13,13 +13,31 @@ import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
-
+from argon2 import PasswordHasher
+from argon2.exceptions import Argon2Error
 BLOCK_SIZE = 16  # For compatibility with existing code, though not used for GCM
 NONCE_SIZE = 12  # Recommended nonce size for AES-GCM
-
+import yaml
 
 def derive_key(password):
-    return hashlib.sha256(password.encode('utf-8')).digest()
+    # Use Argon2id with fixed salt and configured parameters
+    with open ("secret.yaml", "r") as f:
+        secret = yaml.safe_load(f)
+    salt = secret['salt'].encode()  # Fixed salt for deterministic key derivation
+    ph = PasswordHasher(
+        time_cost=3,  # Number of iterations
+        memory_cost=65536,  # 64 MiB of memory
+        parallelism=4,  # Number of parallel threads
+        hash_len=32,  # Output 32 bytes for AES-256
+        salt_len=len(salt)  # Match fixed salt length
+    )
+    try:
+        # Hash password with fixed salt
+        hashed = ph.hash(password.encode('utf-8'), salt=salt)
+        # Extract the raw hash (32 bytes) from the Argon2 output
+        return hashed.encode('utf-8')[-32:]  # Last 32 bytes are the raw hash
+    except Argon2Error:
+        raise ValueError("Key derivation failed")
 
 def aes_encrypt(data_bytes, key):
     nonce = get_random_bytes(NONCE_SIZE)
