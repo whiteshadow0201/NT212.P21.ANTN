@@ -4,7 +4,6 @@ import hashlib
 import platform
 import subprocess
 import re
-from getpass import getpass
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 import sys
