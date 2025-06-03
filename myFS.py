@@ -95,14 +95,14 @@ def get_bios_uuid():
 
 
 class MyFS:
-    def __init__(self, root, volume_path):
+    def __init__(self, root, volume_path, mode='open'):
         self.root = root
         self.volume_path = volume_path
         self.volume_password = None
         self.key = None
         self.superblock_key = None
         self.superblock = None
-        if not os.path.isfile(self.volume_path):
+        if mode == 'create' or not os.path.isfile(self.volume_path):
             self.format_volume()
         else:
             self.load_volume()
@@ -178,7 +178,7 @@ class MyFS:
             try:
                 qr_window = tk.Toplevel(dialog)
                 qr_window.title("Scan QR Code for MyFS TOTP")
-                qr_window.geometry("500x600")
+                qr_window.geometry("900x900")
                 qr_window.transient(dialog)
                 qr_window.grab_set()
 
@@ -759,23 +759,83 @@ class MyFS:
 
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
-def main():
+def choose_or_create_volume():
     root = tk.Tk()
     root.withdraw()
 
-    volume_path = filedialog.asksaveasfilename(
-        title="Choose or Create DRI Volume File",
-        defaultextension=".DRI",
-        filetypes=[("MyFS Volume", "*.DRI")],
-        initialfile="MyVolume"
-    )
+    choice = show_choice_window(root)
 
-    if not volume_path:
-        messagebox.showerror("Error", "No volume file selected.")
+    if choice == 'open':
+        volume_path = filedialog.askopenfilename(
+            title="Select existing DRI Volume",
+            defaultextension=".DRI",
+            filetypes=[("MyFS Volume", "*.DRI")]
+        )
+        if not volume_path:
+            messagebox.showerror("Error", "No volume file selected for opening.")
+            sys.exit()
+        mode = 'open'
+
+    elif choice == 'create':
+        volume_path = filedialog.asksaveasfilename(
+            title="Create new DRI Volume File",
+            defaultextension=".DRI",
+            filetypes=[("MyFS Volume", "*.DRI")],
+            initialfile="MyVolume"
+        )
+        if not volume_path:
+            messagebox.showerror("Error", "No volume file selected for creation.")
+            sys.exit()
+        mode = 'create'
+
+    else:
+        messagebox.showinfo("Exit", "Operation cancelled. Exiting.")
         sys.exit()
 
+    return root, volume_path, mode
+
+def show_choice_window(parent):
+    choice_window = tk.Toplevel(parent)
+    choice_window.title("Choose Action")
+    choice_window.geometry("300x130")
+    choice_window.resizable(False, False)
+    choice_window.grab_set()  # khóa focus ở cửa sổ này
+
+    choice = {'value': None}
+
+    def select_open():
+        choice['value'] = 'open'
+        choice_window.destroy()
+
+    def select_create():
+        choice['value'] = 'create'
+        choice_window.destroy()
+
+    def select_cancel():
+        choice['value'] = 'cancel'
+        choice_window.destroy()
+
+    label = tk.Label(choice_window, text="Do you want to open or create a volume?")
+    label.pack(pady=10)
+
+    btn_open = tk.Button(choice_window, text="Open existing volume", width=25, command=select_open)
+    btn_open.pack(pady=2)
+
+    btn_create = tk.Button(choice_window, text="Create new volume", width=25, command=select_create)
+    btn_create.pack(pady=2)
+
+    btn_cancel = tk.Button(choice_window, text="Cancel", width=25, command=select_cancel)
+    btn_cancel.pack(pady=2)
+
+    choice_window.wait_window()  # đợi cửa sổ đóng lại
+
+    return choice['value']
+
+
+def main():
+    root, volume_path, mode = choose_or_create_volume()
     root.geometry("1x1+3000+3000")
-    app = MyFS(root, volume_path)
+    app = MyFS(root, volume_path, mode)
     root.deiconify()
     root.mainloop()
 
