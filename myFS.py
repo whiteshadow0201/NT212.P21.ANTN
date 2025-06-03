@@ -15,7 +15,6 @@ from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
 
-# MYFS_FILE = 'MyFS.DRI'
 BLOCK_SIZE = 16  # AES block size
 
 def pad(data):
@@ -97,6 +96,7 @@ class MyFS:
         self.key = None
         self.superblock_key = None
         self.superblock = None
+        self.metadata = None
         if mode == 'create' or not os.path.isfile(self.volume_path):
             self.format_volume()
         else:
@@ -110,13 +110,13 @@ class MyFS:
         dialog.grab_set()
 
         tk.Label(dialog, text="Set volume password:", font=("Arial", 12)).pack(pady=10)
-        pwd1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd1_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd1_entry.pack(pady=5)
         tk.Label(dialog, text="Confirm volume password:", font=("Arial", 12)).pack(pady=10)
-        pwd2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd2_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd2_entry.pack(pady=5)
         tk.Label(dialog, text="Key file name (without extension):", font=("Arial", 12)).pack(pady=10)
-        key_name_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_name_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         key_name_entry.pack(pady=5)
 
         def submit():
@@ -133,20 +133,27 @@ class MyFS:
             self.volume_password = pwd1
             password_key = derive_key(self.volume_password)
             self.superblock_key = get_random_bytes(32)
-            encrypted_key = aes_encrypt(self.superblock_key, password_key)
+
+            # Store metadata and superblock_key in key file
+            totp_secret = pyotp.random_base32()
+            self.metadata = {
+                'bios_uuid': get_bios_uuid(),
+                'totp_secret': totp_secret,
+                'superblock_key': self.superblock_key.hex()
+            }
+            metadata_bytes = json.dumps(self.metadata).encode('utf-8')
+            encrypted_metadata = aes_encrypt(metadata_bytes, password_key)
 
             key_path = f"{key_name}.key"
             try:
                 with open(key_path, 'wb') as f:
-                    f.write(encrypted_key)
+                    f.write(encrypted_metadata)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save key file: {e}")
                 return
 
-            totp_secret = pyotp.random_base32()
+            # Initialize superblock with only files
             self.superblock = {
-                'bios_uuid': get_bios_uuid(),
-                'totp_secret': totp_secret,
                 'files': []
             }
             volume_name = os.path.basename(self.volume_path)
@@ -227,24 +234,24 @@ class MyFS:
         attempts = [0]
 
         tk.Label(dialog, text="Enter volume password:", font=("Arial", 12)).pack(pady=10)
-        pwd_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
         tk.Label(dialog, text="Select MyFS.key file:", font=("Arial", 12)).pack(pady=10)
-        key_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         key_path_entry.pack(pady=5)
         tk.Button(
             dialog,
             text="Browse",
-            width=10,  # Chiều rộng (số ký tự)
-            height=1,  # Chiều cao (số dòng)
-            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            width=10,
+            height=1,
+            font=("Arial", 12),
             command=lambda: (
                 key_path_entry.delete(0, tk.END),
                 key_path_entry.insert(0, filedialog.askopenfilename(filetypes=[("Key files", "*.key")]))
             )
         ).pack(pady=5)
         tk.Label(dialog, text="Enter TOTP code:", font=("Arial", 12)).pack(pady=10)
-        totp_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        totp_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         totp_entry.pack(pady=5)
 
         def submit():
@@ -258,8 +265,14 @@ class MyFS:
                 return
             try:
                 with open(key_path, 'rb') as f:
-                    encrypted_key = f.read()
-                self.superblock_key = aes_decrypt(encrypted_key, derive_key(pwd))
+                    encrypted_metadata = f.read()
+                metadata_bytes = aes_decrypt(encrypted_metadata, derive_key(pwd))
+                self.metadata = json.loads(metadata_bytes.decode('utf-8'))
+                # Retrieve superblock_key from metadata
+                if 'superblock_key' not in self.metadata:
+                    messagebox.showerror("Error", "Superblock key not found in key file.")
+                    return
+                self.superblock_key = bytes.fromhex(self.metadata['superblock_key'])
             except Exception:
                 messagebox.showerror("Error", "Wrong password or corrupted key file.")
                 return
@@ -275,28 +288,27 @@ class MyFS:
                     self.root.quit()
                     return
                 decrypted = aes_decrypt(encrypted, self.superblock_key)
-                sb = json.loads(decrypted.decode('utf-8'))
+                self.superblock = json.loads(decrypted.decode('utf-8'))
                 current_bios_uuid = get_bios_uuid()
 
-
-                if 'bios_uuid' not in sb or sb['bios_uuid'] != current_bios_uuid:
-                    messagebox.showerror("Error", "This volume can only be accessed on the machine where it was created.")
+                if 'bios_uuid' not in self.metadata or self.metadata['bios_uuid'] != current_bios_uuid:
+                    messagebox.showerror("Error",
+                                         "This volume can only be accessed on the machine where it was created.")
                     dialog.destroy()
                     self.root.quit()
                     return
-                if 'totp_secret' in sb:
-                    totp = pyotp.TOTP(sb['totp_secret'])
+                if 'totp_secret' in self.metadata:
+                    totp = pyotp.TOTP(self.metadata['totp_secret'])
                     if not totp.verify(totp_code):
                         messagebox.showerror("Error", "Invalid TOTP code.")
                         return
                 else:
-                    messagebox.showerror("Error", "TOTP secret not found in superblock. Volume may be corrupted.")
+                    messagebox.showerror("Error", "TOTP secret not found in metadata. Key file may be corrupted.")
                     dialog.destroy()
                     self.root.quit()
                     return
                 self.volume_password = pwd
                 self.key = derive_key(pwd)
-                self.superblock = sb
                 messagebox.showinfo("Success", "Welcome to MyFS.")
                 dialog.destroy()
                 self.root.geometry("800x600+100+100")
@@ -371,24 +383,24 @@ class MyFS:
         dialog.grab_set()
 
         tk.Label(dialog, text="Select file to import:", font=("Arial", 12)).pack(pady=10)
-        file_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        file_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         file_path_entry.pack(pady=5)
         tk.Button(
             dialog,
             text="Browse",
-            width=10,  # Chiều rộng (số ký tự)
-            height=1,  # Chiều cao (số dòng)
-            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            width=10,
+            height=1,
+            font=("Arial", 12),
             command=lambda: (
                 file_path_entry.delete(0, tk.END),
                 file_path_entry.insert(0, filedialog.askopenfilename())
             )
         ).pack(pady=5)
         tk.Label(dialog, text="Set file password:", font=("Arial", 12)).pack(pady=10)
-        pwd1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd1_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd1_entry.pack(pady=5)
         tk.Label(dialog, text="Confirm file password:", font=("Arial", 12)).pack(pady=10)
-        pwd2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd2_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd2_entry.pack(pady=5)
 
         def submit():
@@ -430,7 +442,6 @@ class MyFS:
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Hiển thị danh sách file chưa bị xóa
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -442,7 +453,6 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
-        # Các trường nhập dữ liệu
         tk.Label(dialog, text="File ID to export:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
@@ -457,9 +467,9 @@ class MyFS:
         tk.Button(
             dialog,
             text="Browse",
-            width=10,  # Chiều rộng (số ký tự)
-            height=1,  # Chiều cao (số dòng)
-            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            width=10,
+            height=1,
+            font=("Arial", 12),
             command=lambda: (
                 out_path_entry.delete(0, tk.END),
                 out_path_entry.insert(0, filedialog.asksaveasfilename())
@@ -502,7 +512,6 @@ class MyFS:
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Hiển thị danh sách file chưa bị xóa
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -514,7 +523,6 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
-        # Nhập ID và mật khẩu
         tk.Label(dialog, text="File ID to delete:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
@@ -551,7 +559,6 @@ class MyFS:
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Hiển thị danh sách file chưa bị xóa
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -563,7 +570,6 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
-        # Nhập ID và mật khẩu
         tk.Label(dialog, text="File ID to permanently delete:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
@@ -613,10 +619,10 @@ class MyFS:
             text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
         text.config(state='disabled')
         tk.Label(dialog, text="File ID to restore:", font=("Arial", 12)).pack(pady=10)
-        fid_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
         tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
-        pwd_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
 
         def submit():
@@ -652,23 +658,23 @@ class MyFS:
         dialog.grab_set()
 
         tk.Label(dialog, text="Enter current volume password:", font=("Arial", 12)).pack(pady=10)
-        old_pass_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        old_pass_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         old_pass_entry.pack(pady=5)
         tk.Label(dialog, text="Enter new volume password:", font=("Arial", 12)).pack(pady=10)
-        new_pass1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass1_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         new_pass1_entry.pack(pady=5)
         tk.Label(dialog, text="Confirm new volume password:", font=("Arial", 12)).pack(pady=10)
-        new_pass2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass2_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         new_pass2_entry.pack(pady=5)
         tk.Label(dialog, text="Select MyFS.key file:", font=("Arial", 12)).pack(pady=10)
-        key_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         key_path_entry.pack(pady=5)
         tk.Button(
             dialog,
             text="Browse",
-            width=10,  # Chiều rộng (số ký tự)
-            height=1,  # Chiều cao (số dòng)
-            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            width=10,
+            height=1,
+            font=("Arial", 12),
             command=lambda: (
                 key_path_entry.delete(0, tk.END),
                 key_path_entry.insert(0, filedialog.asksaveasfilename(filetypes=[("Key files", "*.key")]))
@@ -687,10 +693,12 @@ class MyFS:
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
             new_password_key = derive_key(new_pass1)
-            encrypted_key = aes_encrypt(self.superblock_key, new_password_key)
+            # Re-encrypt metadata and superblock_key with new password
+            metadata_bytes = json.dumps(self.metadata).encode('utf-8')
+            encrypted_metadata = aes_encrypt(metadata_bytes, new_password_key)
             try:
                 with open(key_path, 'wb') as f:
-                    f.write(encrypted_key)
+                    f.write(encrypted_metadata)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save key file: {e}")
                 return
@@ -709,16 +717,16 @@ class MyFS:
         dialog.grab_set()
 
         tk.Label(dialog, text="File ID to change password:", font=("Arial", 12)).pack(pady=10)
-        fid_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
         tk.Label(dialog, text="Enter old file password:", font=("Arial", 12)).pack(pady=10)
-        old_pass_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        old_pass_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         old_pass_entry.pack(pady=5)
         tk.Label(dialog, text="Enter new file password:", font=("Arial", 12)).pack(pady=10)
-        new_pass1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass1_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         new_pass1_entry.pack(pady=5)
         tk.Label(dialog, text="Confirm new file password:", font=("Arial", 12)).pack(pady=10)
-        new_pass2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass2_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         new_pass2_entry.pack(pady=5)
 
         def submit():
@@ -793,7 +801,7 @@ def show_choice_window(parent):
     choice_window.title("Choose Action")
     choice_window.geometry("300x130")
     choice_window.resizable(False, False)
-    choice_window.grab_set()  # khóa focus ở cửa sổ này
+    choice_window.grab_set()
 
     choice = {'value': None}
 
@@ -821,7 +829,7 @@ def show_choice_window(parent):
     btn_cancel = tk.Button(choice_window, text="Cancel", width=25, command=select_cancel)
     btn_cancel.pack(pady=2)
 
-    choice_window.wait_window()  # đợi cửa sổ đóng lại
+    choice_window.wait_window()
 
     return choice['value']
 
