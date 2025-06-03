@@ -1,7 +1,6 @@
 import os
 import json
 import hashlib
-import uuid
 import platform
 import subprocess
 import re
@@ -12,64 +11,16 @@ import sys
 import pyotp
 import qrcode
 import tkinter as tk
+from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
-import random
-
-ascii_arts = [
-    r"""$$\      $$\           $$$$$$$$\  $$$$$$\  
-$$$\    $$$ |          $$  _____|$$  __$$\ 
-$$$$\  $$$$ |$$\   $$\ $$ |      $$ /  \__|
-$$\$$\$$ $$ |$$ |  $$ |$$$$$\    \$$$$$$\  
-$$ \$$$  $$ |$$ |  $$ |$$  __|    \____$$\ 
-$$ |\$  /$$ |$$ |  $$ |$$ |      $$\   $$ |
-$$ | \_/ $$ |\$$$$$$$ |$$ |      \$$$$$$  |
-\__|     \__| \____$$ |\__|       \______/ 
-             $$\   $$ |                    
-             \$$$$$$  |                    
-              \______/                      """,
-
-    r"""    __  __                ____     ___   
-   F  \/  ]    _    _    F ___J   F __". 
-  J |\__/| L  J |  | L  J |___:  J (___| 
-  | |`--'| |  | |  | |  | _____| J\___ \ 
-  F L    J J  F L__J J  F |____J.--___) \
- J__L    J__L )-____  LJ__F     J\______J
- |__L    J__|J\______/F|__|      J______F
-              J______F                   """,
-    """
-                 ___   ___  
-|\ /|  \ /  |     |     
-| + |   +   |-+-   -+-  
-|   |  /    |         | 
-                   ---  
-                        
-    """,
-    """
-                                                   
-    _/      _/            _/_/_/_/    _/_/_/   
-   _/_/  _/_/  _/    _/  _/        _/          
-  _/  _/  _/  _/    _/  _/_/_/      _/_/       
- _/      _/  _/    _/  _/              _/      
-_/      _/    _/_/_/  _/        _/_/_/         
-                 _/                            
-            _/_/                               
-    """
-]
-
-def print_random_ascii_art():
-    art = random.choice(ascii_arts)
-    print("\n" + art + "\n")
-
 
 MYFS_FILE = 'MyFS.DRI'
 BLOCK_SIZE = 16  # AES block size
 
-
 def pad(data):
     pad_len = BLOCK_SIZE - len(data) % BLOCK_SIZE
     return data + bytes([pad_len]) * pad_len
-
 
 def unpad(data):
     pad_len = data[-1]
@@ -77,18 +28,14 @@ def unpad(data):
         raise ValueError("Invalid padding")
     return data[:-pad_len]
 
-
 def derive_key(password):
-    # Derive 32 bytes key from password with SHA256
     return hashlib.sha256(password.encode('utf-8')).digest()
-
 
 def aes_encrypt(data_bytes, key):
     iv = get_random_bytes(BLOCK_SIZE)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     ciphertext = cipher.encrypt(pad(data_bytes))
-    return iv + ciphertext  # prepend IV
-
+    return iv + ciphertext
 
 def aes_decrypt(enc_bytes, key):
     iv = enc_bytes[:BLOCK_SIZE]
@@ -97,150 +44,174 @@ def aes_decrypt(enc_bytes, key):
     padded = cipher.decrypt(ciphertext)
     return unpad(padded)
 
-
 def get_bios_uuid():
     system = platform.system().lower()
     print(f"[DEBUG] Detecting system: {system}")
 
-    if system == "windows":
-        try:
+    try:
+        if system == "windows":
             output = subprocess.check_output(
                 ["wmic", "csproduct", "get", "UUID"],
                 text=True
             )
-            # UUID
-            # XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-            lines = output.strip().split('\n')
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
             if len(lines) >= 2:
-                uuid = lines[1].strip()
-                if uuid and uuid != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                uuid = lines[1]
+                if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                     print(f"[DEBUG] Windows BIOS UUID: {uuid}")
                     return uuid
-        except Exception as e:
-            print(f"[DEBUG] Failed to get Windows BIOS UUID: {e}")
 
-    elif system == "linux":
-        try:
+        elif system == "linux":
             output = subprocess.check_output(
                 ["dmidecode", "-s", "system-uuid"],
                 text=True,
                 stderr=subprocess.DEVNULL
             ).strip()
-            if output and output != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+            if output and output.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                 print(f"[DEBUG] Linux BIOS UUID: {output}")
                 return output
-        except Exception as e:
-            print(f"[DEBUG] Failed to get Linux BIOS UUID: {e}")
 
-    elif system == "darwin":
-        try:
+        elif system == "darwin":
             output = subprocess.check_output(
                 ["system_profiler", "SPHardwareDataType"],
                 text=True
             )
-            match = re.search(r"Hardware UUID:\s*([0-9A-Fa-f-]+)", output)
+            match = re.search(r"Hardware UUID:\s*([0-9A-Fa-f\-]+)", output)
             if match:
                 uuid = match.group(1)
-                print(f"[DEBUG] macOS Hardware UUID: {uuid}")
-                return uuid
-        except Exception as e:
-            print(f"[DEBUG] Failed to get macOS Hardware UUID: {e}")
+                if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                    print(f"[DEBUG] macOS Hardware UUID: {uuid}")
+                    return uuid
+
+    except subprocess.CalledProcessError as e:
+        print(f"[DEBUG] Command failed: {e}")
+    except FileNotFoundError as e:
+        print(f"[DEBUG] Command not found: {e}")
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {e}")
+
+    print("[DEBUG] BIOS UUID not found or invalid")
+    return None
+
 
 class MyFS:
-    def __init__(self):
+    def __init__(self, root):
+        self.root = root
         self.volume_password = None
         self.key = None
         self.superblock_key = None
         self.superblock = None
         if not os.path.isfile(MYFS_FILE):
-            print("[!] Volume not found. Creating new volume...")
             self.format_volume()
         else:
             self.load_volume()
 
     def format_volume(self):
-        while True:
-            pwd1 = getpass("Set volume password: ")
-            pwd2 = getpass("Confirm volume password: ")
-            if pwd1 == pwd2 and pwd1 != '':
-                self.volume_password = pwd1
-                break
-            print("Passwords do not match or empty. Try again.")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Format Volume")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-        password_key = derive_key(self.volume_password)
-        self.superblock_key = get_random_bytes(32)  # Khóa ngẫu nhiên để mã hóa siêu khối
-        encrypted_key = aes_encrypt(self.superblock_key, password_key)
+        tk.Label(dialog, text="Set volume password:", font=("Arial", 12)).pack(pady=10)
+        pwd1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd1_entry.pack(pady=5)
+        tk.Label(dialog, text="Confirm volume password:", font=("Arial", 12)).pack(pady=10)
+        pwd2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd2_entry.pack(pady=5)
+        tk.Label(dialog, text="Key file name (without extension):", font=("Arial", 12)).pack(pady=10)
+        key_name_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_name_entry.pack(pady=5)
 
-        key_path = input("Enter filename to store MyFS key on removable disk (without extension): ").strip()
-        with open(key_path+ ".key", 'wb') as f:
-            f.write(encrypted_key )
+        def submit():
+            pwd1 = pwd1_entry.get()
+            pwd2 = pwd2_entry.get()
+            key_name = key_name_entry.get().strip()
+            if pwd1 != pwd2 or pwd1 == '':
+                messagebox.showerror("Error", "Passwords do not match or are empty.")
+                return
+            if not key_name:
+                messagebox.showerror("Error", "Key file name cannot be empty.")
+                return
 
-        # Tạo khóa bí mật TOTP
-        totp_secret = pyotp.random_base32()
-        self.superblock = {
-            'files': [],
-            'bios_uuid': get_bios_uuid(),
-            'totp_secret': totp_secret  # Lưu khóa TOTP vào siêu khối
-        }
+            self.volume_password = pwd1
+            password_key = derive_key(self.volume_password)
+            self.superblock_key = get_random_bytes(32)
+            encrypted_key = aes_encrypt(self.superblock_key, password_key)
 
-        # Tạo URI cho TOTP
-        totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
-            name="MyFS Volume",
-            issuer_name="MyFS"
-        )
+            key_path = f"{key_name}.key"
+            try:
+                with open(key_path, 'wb') as f:
+                    f.write(encrypted_key)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save key file: {e}")
+                return
 
-        # Tạo hình ảnh QR code
-        qr = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr.add_data(totp_uri)
-        qr.make(fit=True)
-        qr_image = qr.make_image(fill_color="black", back_color="white")
-
-        try:
-            # Khởi tạo cửa sổ tkinter trước
-            window = tk.Tk()
-            window.title("Scan QR Code for MyFS TOTP")
-            window.geometry("500x600")  # Kích thước cửa sổ
-
-            # Chuyển đổi hình ảnh QR thành định dạng hiển thị trong tkinter
-            bio = BytesIO()
-            qr_image.save(bio, format="PNG")
-            photo = ImageTk.PhotoImage(Image.open(bio))
-
-            # Hiển thị hướng dẫn
-            label = tk.Label(
-                window,
-                text="Scan this QR code with Microsoft Authenticator\nor manually enter the secret: " + totp_secret,
-                wraplength=350,
-                justify="center",
-                font=("Arial", 12)
+            totp_secret = pyotp.random_base32()
+            self.superblock = {
+                'files': [],
+                'bios_uuid': get_bios_uuid(),
+                'totp_secret': totp_secret
+            }
+            totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
+                name="MyFS Volume",
+                issuer_name="MyFS"
             )
-            label.pack(pady=10)
+            qr = qrcode.QRCode(version=1, box_size=10, border=4)
+            qr.add_data(totp_uri)
+            qr.make(fit=True)
+            qr_image = qr.make_image(fill_color="black", back_color="white")
 
-            # Hiển thị hình ảnh QR code
-            qr_label = tk.Label(window, image=photo)
-            qr_label.pack(pady=10)
+            def on_qr_ok():
+                qr_window.destroy()
+                self.write_superblock()
+                messagebox.showinfo("Success", "Volume formatted and encrypted.")
+                dialog.destroy()
+                self.root.geometry("800x600+100+100")
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                self.show_main_menu()
 
-            # Nút đóng cửa sổ
-            button = tk.Button(window, text="OK", command=window.destroy, font=("Arial", 12))
-            button.pack(pady=10)
+            try:
+                qr_window = tk.Toplevel(dialog)
+                qr_window.title("Scan QR Code for MyFS TOTP")
+                qr_window.geometry("500x600")
+                qr_window.transient(dialog)
+                qr_window.grab_set()
 
-            # Giữ tham chiếu đến ảnh để tránh bị garbage collected
-            qr_label.image = photo
+                bio = BytesIO()
+                qr_image.save(bio, format="PNG")
+                photo = ImageTk.PhotoImage(Image.open(bio))
+                tk.Label(
+                    qr_window,
+                    text="Scan this QR code with Microsoft Authenticator\nor manually enter the secret: " + totp_secret,
+                    wraplength=350,
+                    justify="center",
+                    font=("Arial", 12)
+                ).pack(pady=10)
+                qr_label = tk.Label(qr_window, image=photo)
+                qr_label.pack(pady=10)
+                qr_label.image = photo
+                tk.Button(qr_window, text="OK", command=on_qr_ok, font=("Arial", 12), width=10, height=1).pack(pady=10)
 
-            # Chạy vòng lặp chính của tkinter để hiển thị cửa sổ
-            window.mainloop()
+            except tk.TclError as e:
+                qr_path = "totp_qr.png"
+                qr_image.save(qr_path)
+                messagebox.showinfo("Info",
+                                    f"GUI not available. QR code saved to '{qr_path}'. Scan it with Microsoft Authenticator.\nOr manually enter this secret: {totp_secret}")
+                input("Press Enter after scanning the QR code or entering the secret...")
+                self.write_superblock()
+                messagebox.showinfo("Success", "Volume formatted and encrypted.")
+                dialog.destroy()
+                self.root.geometry("800x600+100+100")
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                self.show_main_menu()
 
-        except tk.TclError as e:
-            # Nếu GUI không khả dụng, lưu QR code thành file
-            print(f"[!] GUI not available: {e}")
-            qr_path = "totp_qr.png"
-            qr_image.save(qr_path)
-            print(f"[*] QR code saved to '{qr_path}'. Scan it with Microsoft Authenticator.")
-            print(f"[*] Or manually enter this secret: {totp_secret}")
-            input("Press Enter after scanning the QR code or entering the secret...")
-
-        self.write_superblock()
-        print("[+] Volume formatted and encrypted.")
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: dialog.destroy())
 
     def write_superblock(self):
         sb_bytes = json.dumps(self.superblock).encode('utf-8')
@@ -251,57 +222,101 @@ class MyFS:
             f.write(encrypted)
 
     def load_volume(self):
-        for attempt in range(3):
-            pwd = getpass("Enter volume password: ")
-            password_key = derive_key(pwd)
-            key_path = input("Enter path to MyFS.key on removable disk: ").strip()
-            if not os.path.isfile(key_path):
-                print("[!] MyFS.key not found on removable disk.")
-                continue
-            with open(key_path, 'rb') as f:
-                encrypted_key = f.read()
-            try:
-                self.superblock_key = aes_decrypt(encrypted_key, password_key)
-            except Exception:
-                print("[!] Wrong password or corrupted key file.")
-                continue
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Unlock Volume")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        attempts = [0]
 
-            with open(MYFS_FILE, 'rb') as f:
-                sb_hash = f.read(64).decode('utf-8')
-                encrypted = f.read()
-            check_hash = hashlib.sha256(encrypted).hexdigest()
-            if check_hash != sb_hash:
-                print("[!] Volume corrupted or integrity check failed.")
-                sys.exit(1)
+        tk.Label(dialog, text="Enter volume password:", font=("Arial", 12)).pack(pady=10)
+        pwd_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd_entry.pack(pady=5)
+        tk.Label(dialog, text="Select MyFS.key file:", font=("Arial", 12)).pack(pady=10)
+        key_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_path_entry.pack(pady=5)
+        tk.Button(
+            dialog,
+            text="Browse",
+            width=10,  # Chiều rộng (số ký tự)
+            height=1,  # Chiều cao (số dòng)
+            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            command=lambda: (
+                key_path_entry.delete(0, tk.END),
+                key_path_entry.insert(0, filedialog.askopenfilename(filetypes=[("Key files", "*.key")]))
+            )
+        ).pack(pady=5)
+        tk.Label(dialog, text="Enter TOTP code:", font=("Arial", 12)).pack(pady=10)
+        totp_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        totp_entry.pack(pady=5)
+
+        def submit():
+            pwd = pwd_entry.get()
+            key_path = key_path_entry.get()
+            totp_code = totp_entry.get()
+            attempts[0] += 1
+
+            if not os.path.isfile(key_path):
+                messagebox.showerror("Error", "MyFS.key not found.")
+                return
             try:
+                with open(key_path, 'rb') as f:
+                    encrypted_key = f.read()
+                self.superblock_key = aes_decrypt(encrypted_key, derive_key(pwd))
+            except Exception:
+                messagebox.showerror("Error", "Wrong password or corrupted key file.")
+                return
+
+            try:
+                with open(MYFS_FILE, 'rb') as f:
+                    sb_hash = f.read(64).decode('utf-8')
+                    encrypted = f.read()
+                check_hash = hashlib.sha256(encrypted).hexdigest()
+                if check_hash != sb_hash:
+                    messagebox.showerror("Error", "Volume corrupted or integrity check failed.")
+                    dialog.destroy()
+                    self.root.quit()
+                    return
                 decrypted = aes_decrypt(encrypted, self.superblock_key)
                 sb = json.loads(decrypted.decode('utf-8'))
                 current_bios_uuid = get_bios_uuid()
-                if 'bios_uuid' not in sb or sb['bios_uuid'] != current_bios_uuid:
-                    print("[!] This volume can only be accessed on the machine where it was created.")
-                    sys.exit(1)
+                print("Current BIOS UUID: ", current_bios_uuid)
+                print("Bios UUID: ", sb['bios_uuid'])
 
-                # Kiểm tra mã TOTP
+                if 'bios_uuid' not in sb or sb['bios_uuid'] != current_bios_uuid:
+                    messagebox.showerror("Error", "This volume can only be accessed on the machine where it was created.")
+                    dialog.destroy()
+                    self.root.quit()
+                    return
                 if 'totp_secret' in sb:
                     totp = pyotp.TOTP(sb['totp_secret'])
-                    totp_code = input("Enter TOTP code from Microsoft Authenticator: ")
                     if not totp.verify(totp_code):
-                        print("[!] Invalid TOTP code.")
-                        continue
+                        messagebox.showerror("Error", "Invalid TOTP code.")
+                        return
                 else:
-                    print("[!] TOTP secret not found in superblock. Volume may be corrupted.")
-                    sys.exit(1)
-
+                    messagebox.showerror("Error", "TOTP secret not found in superblock. Volume may be corrupted.")
+                    dialog.destroy()
+                    self.root.quit()
+                    return
                 self.volume_password = pwd
-                self.key = password_key
+                self.key = derive_key(pwd)
                 self.superblock = sb
-                print("Welcome to MyFS.")
-                return
+                messagebox.showinfo("Success", "Welcome to MyFS.")
+                dialog.destroy()
+                self.root.geometry("800x600+100+100")
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                self.show_main_menu()
             except Exception:
-                print("[!] Decryption failed or invalid TOTP code.")
-                continue
-        print("[!] Too many wrong password attempts.")
-        sys.exit(1)
+                messagebox.showerror("Error", "Decryption failed or invalid TOTP code.")
+                if attempts[0] >= 3:
+                    messagebox.showerror("Error", "Too many wrong password attempts.")
+                    dialog.destroy()
+                    self.root.quit()
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: sys.exit())
 
     def encrypt_file_content(self, data_bytes, file_password):
         key = derive_key(file_password)
@@ -315,242 +330,438 @@ class MyFS:
         except Exception:
             return None
 
+    def show_main_menu(self):
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.root.title("Encrypted Volume Manager")
+        self.root.geometry("600x500")
+        tk.Label(self.root, text="Encrypted Volume Manager", font=("Arial", 14, "bold")).pack(pady=20)
+        buttons = [
+            ("List Files", self.list_files),
+            ("Import File", self.import_file),
+            ("Export File", self.export_file),
+            ("Delete File", self.delete_file),
+            ("Permanently Delete File", self.permanently_delete_file),
+            ("Restore File", self.restore_file),
+            ("Change Volume Password", self.set_volume_password),
+            ("Change File Password", self.change_file_password),
+            ("Exit", self.root.quit)
+        ]
+        for text, command in buttons:
+            tk.Button(self.root, text=text, command=command, font=("Arial", 12), width=20, height=1).pack(pady=5)
+
     def list_files(self):
         files = [f for f in self.superblock['files'] if not f['deleted']]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("List Files")
+        dialog.geometry("600x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
         if not files:
-            print("[*] No files in volume.")
-            return
-        for f in files:
-            print(f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}")
+            tk.Label(dialog, text="No files in volume.", font=("Arial", 12)).pack(pady=20)
+        else:
+            text = tk.Text(dialog, height=10, width=70, font=("Arial", 12))
+            text.pack(pady=10)
+            for f in files:
+                text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
+            text.config(state='disabled')
+        tk.Button(dialog, text="Close", command=dialog.destroy, font=("Arial", 12), width=10, height=1).pack(pady=10)
 
     def import_file(self):
-        path = input("File path to import: ").strip()
-        if not os.path.isfile(path):
-            print("[!] File not found.")
-            return
-        while True:
-            file_pass = getpass("Set file password: ")
-            file_pass2 = getpass("Confirm file password: ")
-            if file_pass == file_pass2 and file_pass != '':
-                break
-            print("[!] Passwords do not match or empty. Try again.")
-        try:
-            with open(path, 'rb') as f:
-                data = f.read()
-        except Exception as e:
-            print("[!] Failed to read file:", e)
-            return
-        encrypted_content = self.encrypt_file_content(data, file_pass)
-        file_id = 1 + max([f['id'] for f in self.superblock['files']] or [0])
-        file_entry = {
-            'id': file_id,
-            'name': os.path.basename(path),
-            'deleted': False,
-            'content': encrypted_content,
-            'file_pass_hash': hashlib.sha256(file_pass.encode()).hexdigest()
-        }
-        self.superblock['files'].append(file_entry)
-        self.write_superblock()
-        print("[+] File imported")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import File")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Select file to import:", font=("Arial", 12)).pack(pady=10)
+        file_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        file_path_entry.pack(pady=5)
+        tk.Button(
+            dialog,
+            text="Browse",
+            width=10,  # Chiều rộng (số ký tự)
+            height=1,  # Chiều cao (số dòng)
+            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            command=lambda: (
+                file_path_entry.delete(0, tk.END),
+                file_path_entry.insert(0, filedialog.askopenfilename())
+            )
+        ).pack(pady=5)
+        tk.Label(dialog, text="Set file password:", font=("Arial", 12)).pack(pady=10)
+        pwd1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd1_entry.pack(pady=5)
+        tk.Label(dialog, text="Confirm file password:", font=("Arial", 12)).pack(pady=10)
+        pwd2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd2_entry.pack(pady=5)
+
+        def submit():
+            path = file_path_entry.get()
+            file_pass = pwd1_entry.get()
+            file_pass2 = pwd2_entry.get()
+            if not os.path.isfile(path):
+                messagebox.showerror("Error", "File not found.")
+                return
+            if file_pass != file_pass2 or file_pass == '':
+                messagebox.showerror("Error", "Passwords do not match or are empty.")
+                return
+            try:
+                with open(path, 'rb') as f:
+                    data = f.read()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to read file: {e}")
+                return
+            encrypted_content = self.encrypt_file_content(data, file_pass)
+            file_id = 1 + max([f['id'] for f in self.superblock['files']] or [0])
+            file_entry = {
+                'id': file_id,
+                'name': os.path.basename(path),
+                'deleted': False,
+                'content': encrypted_content,
+                'file_pass_hash': hashlib.sha256(file_pass.encode()).hexdigest()
+            }
+            self.superblock['files'].append(file_entry)
+            self.write_superblock()
+            messagebox.showinfo("Success", "File imported.")
+            dialog.destroy()
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def export_file(self):
-        try:
-            fid = int(input("File ID to export: "))
-        except ValueError:
-            print("[!] Invalid ID")
-            return
-        f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
-        if not f:
-            print("[!] File not found or deleted.")
-            return
-        file_pass = getpass("Enter file password: ")
-        if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
-            print("[!] Wrong file password.")
-            return
-        data = self.decrypt_file_content(f['content'], file_pass)
-        if data is None:
-            print("[!] Decryption failed, wrong password or corrupted file.")
-            return
-        out_path = input("Export file path: ").strip()
-        try:
-            with open(out_path, 'wb') as f:
-                f.write(data)
-            print("[+] File exported.")
-        except Exception as e:
-            print("[!] Failed to write exported file:", e)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Export File")
+        dialog.geometry("700x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Hiển thị danh sách file chưa bị xóa
+        files = [f for f in self.superblock['files'] if not f['deleted']]
+        tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
+        if not files:
+            tk.Label(dialog, text="No files to export.", font=("Arial", 12)).pack(pady=5)
+        else:
+            text = tk.Text(dialog, height=10, width=70, font=("Arial", 11))
+            text.pack(pady=5)
+            for f in files:
+                text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
+            text.config(state='disabled')
+
+        # Các trường nhập dữ liệu
+        tk.Label(dialog, text="File ID to export:", font=("Arial", 12)).pack(pady=10)
+        fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
+        fid_entry.pack(pady=5)
+
+        tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
+        pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
+        pwd_entry.pack(pady=5)
+
+        tk.Label(dialog, text="Export file path:", font=("Arial", 12)).pack(pady=10)
+        out_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
+        out_path_entry.pack(pady=5)
+        tk.Button(
+            dialog,
+            text="Browse",
+            width=10,  # Chiều rộng (số ký tự)
+            height=1,  # Chiều cao (số dòng)
+            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            command=lambda: (
+                out_path_entry.delete(0, tk.END),
+                out_path_entry.insert(0, filedialog.asksaveasfilename())
+            )
+        ).pack(pady=5)
+
+        def submit():
+            try:
+                fid = int(fid_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid ID")
+                return
+            f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
+            if not f:
+                messagebox.showerror("Error", "File not found or deleted.")
+                return
+            file_pass = pwd_entry.get()
+            if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
+                messagebox.showerror("Error", "Wrong file password.")
+                return
+            data = self.decrypt_file_content(f['content'], file_pass)
+            if data is None:
+                messagebox.showerror("Error", "Decryption failed, wrong password or corrupted file.")
+                return
+            out_path = out_path_entry.get()
+            try:
+                with open(out_path, 'wb') as f:
+                    f.write(data)
+                messagebox.showinfo("Success", "File exported.")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to write exported file: {e}")
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def delete_file(self):
-        try:
-            fid = int(input("File ID to delete: "))
-        except ValueError:
-            print("[!] Invalid ID")
-            return
-        f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
-        if not f:
-            print("[!] File not found or already deleted.")
-            return
-        file_pass = getpass("Enter file password: ")
-        if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
-            print("[!] Wrong file password.")
-            return
-        f['deleted'] = True
-        self.write_superblock()
-        print("[+] File deleted.")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Delete File")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Hiển thị danh sách file chưa bị xóa
+        files = [f for f in self.superblock['files'] if not f['deleted']]
+        tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
+        if not files:
+            tk.Label(dialog, text="No files to delete.", font=("Arial", 12)).pack(pady=5)
+        else:
+            text = tk.Text(dialog, height=10, width=70, font=("Arial", 11))
+            text.pack(pady=5)
+            for f in files:
+                text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
+            text.config(state='disabled')
+
+        # Nhập ID và mật khẩu
+        tk.Label(dialog, text="File ID to delete:", font=("Arial", 12)).pack(pady=10)
+        fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
+        fid_entry.pack(pady=5)
+
+        tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
+        pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
+        pwd_entry.pack(pady=5)
+
+        def submit():
+            try:
+                fid = int(fid_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid ID")
+                return
+            f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
+            if not f:
+                messagebox.showerror("Error", "File not found or already deleted.")
+                return
+            file_pass = pwd_entry.get()
+            if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
+                messagebox.showerror("Error", "Wrong file password.")
+                return
+            f['deleted'] = True
+            self.write_superblock()
+            messagebox.showinfo("Success", "File deleted.")
+            dialog.destroy()
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def permanently_delete_file(self):
-        try:
-            fid = int(input("File ID to permanently delete: "))
-        except ValueError:
-            print("[!] Invalid ID")
-            return
-        f = next((f for f in self.superblock['files'] if f['id'] == fid), None)
-        if not f:
-            print("[!] File not found.")
-            return
-        file_pass = getpass("Enter file password: ")
-        if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
-            print("[!] Wrong file password.")
-            return
-        # Overwrite content with null bytes
-        f['content'] = '00' * (len(f['content']) // 2)  # Hex string of null bytes
-        f['file_pass_hash'] = '0' * 64  # Overwrite password hash
-        # Remove the file entry from superblock
-        self.superblock['files'] = [file for file in self.superblock['files'] if file['id'] != fid]
-        self.write_superblock()
-        print("[+] File permanently deleted and data overwritten with null bytes.")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Permanently Delete File")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Hiển thị danh sách file chưa bị xóa
+        files = [f for f in self.superblock['files'] if not f['deleted']]
+        tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
+        if not files:
+            tk.Label(dialog, text="No files to delete permanently.", font=("Arial", 12)).pack(pady=5)
+        else:
+            text = tk.Text(dialog, height=10, width=70, font=("Arial", 11))
+            text.pack(pady=5)
+            for f in files:
+                text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
+            text.config(state='disabled')
+
+        # Nhập ID và mật khẩu
+        tk.Label(dialog, text="File ID to permanently delete:", font=("Arial", 12)).pack(pady=10)
+        fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
+        fid_entry.pack(pady=5)
+
+        tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
+        pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
+        pwd_entry.pack(pady=5)
+
+        def submit():
+            try:
+                fid = int(fid_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid ID")
+                return
+            f = next((f for f in self.superblock['files'] if f['id'] == fid), None)
+            if not f:
+                messagebox.showerror("Error", "File not found.")
+                return
+            file_pass = pwd_entry.get()
+            if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
+                messagebox.showerror("Error", "Wrong file password.")
+                return
+            f['content'] = '00' * (len(f['content']) // 2)
+            f['file_pass_hash'] = '0' * 64
+            self.superblock['files'] = [file for file in self.superblock['files'] if file['id'] != fid]
+            self.write_superblock()
+            messagebox.showinfo("Success", "File permanently deleted and data overwritten with null bytes.")
+            dialog.destroy()
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def restore_file(self):
-        # List soft-deleted files
         deleted_files = [f for f in self.superblock['files'] if f['deleted']]
         if not deleted_files:
-            print("[*] No deleted files available to restore.")
+            messagebox.showinfo("Info", "No deleted files available to restore.")
             return
-        print("[*] Deleted files available for restoration:")
-        for f in deleted_files:
-            print(f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Restore File")
+        dialog.geometry("700x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-        # Proceed with restoration
-        try:
-            fid = int(input("File ID to restore: "))
-        except ValueError:
-            print("[!] Invalid ID")
-            return
-        f = next((f for f in self.superblock['files'] if f['id'] == fid and f['deleted']), None)
-        if not f:
-            print("[!] File not found or not deleted.")
-            return
-        file_pass = getpass("Enter file password: ")
-        if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
-            print("[!] Wrong file password.")
-            return
-        # Verify file content integrity by attempting decryption
-        data = self.decrypt_file_content(f['content'], file_pass)
-        if data is None:
-            print("[!] Cannot decrypt file, content may be corrupted.")
-            return
-        f['deleted'] = False
-        self.write_superblock()
-        print("[+] File restored.")
+        tk.Label(dialog, text="Deleted files available for restoration:", font=("Arial", 12)).pack(pady=10)
+        text = tk.Text(dialog, height=10, width=70, font=("Arial", 12))
+        text.pack(pady=10)
+        for f in deleted_files:
+            text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
+        text.config(state='disabled')
+        tk.Label(dialog, text="File ID to restore:", font=("Arial", 12)).pack(pady=10)
+        fid_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        fid_entry.pack(pady=5)
+        tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
+        pwd_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        pwd_entry.pack(pady=5)
+
+        def submit():
+            try:
+                fid = int(fid_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid ID")
+                return
+            f = next((f for f in self.superblock['files'] if f['id'] == fid and f['deleted']), None)
+            if not f:
+                messagebox.showerror("Error", "File not found or not deleted.")
+                return
+            file_pass = pwd_entry.get()
+            if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
+                messagebox.showerror("Error", "Wrong file password.")
+                return
+            data = self.decrypt_file_content(f['content'], file_pass)
+            if data is None:
+                messagebox.showerror("Error", "Cannot decrypt file, content may be corrupted.")
+                return
+            f['deleted'] = False
+            self.write_superblock()
+            messagebox.showinfo("Success", "File restored.")
+            dialog.destroy()
+
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def set_volume_password(self):
-        old_pass = getpass("Enter current volume password: ")
-        if old_pass != self.volume_password:
-            print("[!] Wrong password.")
-            return
-        while True:
-            new_pass1 = getpass("Enter new volume password: ")
-            new_pass2 = getpass("Confirm new volume password: ")
-            if new_pass1 == new_pass2 and new_pass1 != '':
-                break
-            print("Passwords do not match or empty. Try again.")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change Volume Password")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-        new_password_key = derive_key(new_pass1)
-        encrypted_key = aes_encrypt(self.superblock_key, new_password_key)
+        tk.Label(dialog, text="Enter current volume password:", font=("Arial", 12)).pack(pady=10)
+        old_pass_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        old_pass_entry.pack(pady=5)
+        tk.Label(dialog, text="Enter new volume password:", font=("Arial", 12)).pack(pady=10)
+        new_pass1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass1_entry.pack(pady=5)
+        tk.Label(dialog, text="Confirm new volume password:", font=("Arial", 12)).pack(pady=10)
+        new_pass2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass2_entry.pack(pady=5)
+        tk.Label(dialog, text="Select MyFS.key file:", font=("Arial", 12)).pack(pady=10)
+        key_path_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        key_path_entry.pack(pady=5)
+        tk.Button(
+            dialog,
+            text="Browse",
+            width=10,  # Chiều rộng (số ký tự)
+            height=1,  # Chiều cao (số dòng)
+            font=("Arial", 12),  # Kiểu chữ và cỡ chữ
+            command=lambda: (
+                key_path_entry.delete(0, tk.END),
+                key_path_entry.insert(0, filedialog.asksaveasfilename(filetypes=[("Key files", "*.key")]))
+            )
+        ).pack(pady=5)
 
-        key_path = input("Enter path to MyFS.key on removable disk: ").strip()
-        with open(key_path, 'wb') as f:
-            f.write(encrypted_key)
+        def submit():
+            old_pass = old_pass_entry.get()
+            if old_pass != self.volume_password:
+                messagebox.showerror("Error", "Wrong password.")
+                return
+            new_pass1 = new_pass1_entry.get()
+            new_pass2 = new_pass2_entry.get()
+            key_path = key_path_entry.get()
+            if new_pass1 != new_pass2 or new_pass1 == '':
+                messagebox.showerror("Error", "Passwords do not match or are empty.")
+                return
+            new_password_key = derive_key(new_pass1)
+            encrypted_key = aes_encrypt(self.superblock_key, new_password_key)
+            try:
+                with open(key_path, 'wb') as f:
+                    f.write(encrypted_key)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save key file: {e}")
+                return
+            self.volume_password = new_pass1
+            self.key = new_password_key
+            messagebox.showinfo("Success", "Volume password changed.")
+            dialog.destroy()
 
-        self.volume_password = new_pass1
-        self.key = new_password_key
-        print("[+] Volume password changed.")
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def change_file_password(self):
-        try:
-            fid = int(input("File ID to change password: "))
-        except ValueError:
-            print("[!] Invalid ID")
-            return
-        f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
-        if not f:
-            print("[!] File not found or deleted.")
-            return
-        old_pass = getpass("Enter old file password: ")
-        if hashlib.sha256(old_pass.encode()).hexdigest() != f['file_pass_hash']:
-            print("[!] Wrong file password.")
-            return
-        new_pass1 = getpass("Enter new file password: ")
-        new_pass2 = getpass("Confirm new file password: ")
-        if new_pass1 != new_pass2 or new_pass1 == '':
-            print("[!] Passwords do not match or empty.")
-            return
-        # Decrypt content with old pass
-        data = self.decrypt_file_content(f['content'], old_pass)
-        if data is None:
-            print("[!] Cannot decrypt file with old password. Abort.")
-            return
-        # Encrypt with new pass
-        new_encrypted = self.encrypt_file_content(data, new_pass1)
-        f['content'] = new_encrypted
-        f['file_pass_hash'] = hashlib.sha256(new_pass1.encode()).hexdigest()
-        self.write_superblock()
-        print("[+] File password changed.")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change File Password")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-    def run(self):
-        cmds = {
-            'list': self.list_files,
-            'import': self.import_file,
-            'export': self.export_file,
-            'delete': self.delete_file,
-            'pdelete': self.permanently_delete_file,
-            'restore': self.restore_file,
-            'setpass': self.set_volume_password,
-            'chpass': self.change_file_password,
-            'exit': sys.exit
-        }
-        while True:
-            cmd = input(
-                "\n"
-                "+--------------------------------------------------------------------+\n"
-                "|                        ENCRYPTED VOLUME MANAGER                    |\n"
-                "+--------------------------------------------------------------------+\n"
-                "| Available commands:                                                |\n"
-                "|  list        - List all non-deleted files in the volume            |\n"
-                "|  import      - Import a file into the volume with encryption       |\n"
-                "|  export      - Export a file from the volume to the filesystem     |\n"
-                "|  delete      - Soft delete a file (recoverable)                    |\n"
-                "|  pdelete     - Permanently delete a file and overwrite its data    |\n"
-                "|  restore     - Restore a soft-deleted file                         |\n"
-                "|  setpass     - Change the volume's password                        |\n"
-                "|  chpass      - Change the password of a specific file              |\n"
-                "|  exit        - Exit the program                                    |\n"
-                "+--------------------------------------------------------------------+\n"
-                "\n"
-                "> Enter command: "
-            ).strip().lower()
+        tk.Label(dialog, text="File ID to change password:", font=("Arial", 12)).pack(pady=10)
+        fid_entry = tk.Entry(dialog,  width=30, font=("Arial", 14))
+        fid_entry.pack(pady=5)
+        tk.Label(dialog, text="Enter old file password:", font=("Arial", 12)).pack(pady=10)
+        old_pass_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        old_pass_entry.pack(pady=5)
+        tk.Label(dialog, text="Enter new file password:", font=("Arial", 12)).pack(pady=10)
+        new_pass1_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass1_entry.pack(pady=5)
+        tk.Label(dialog, text="Confirm new file password:", font=("Arial", 12)).pack(pady=10)
+        new_pass2_entry = tk.Entry(dialog, show="*",  width=30, font=("Arial", 14))
+        new_pass2_entry.pack(pady=5)
 
-            if cmd in cmds:
-                cmds[cmd]()
-            else:
-                print("[!] Unknown command.")
+        def submit():
+            try:
+                fid = int(fid_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid ID")
+                return
+            f = next((f for f in self.superblock['files'] if f['id'] == fid and not f['deleted']), None)
+            if not f:
+                messagebox.showerror("Error", "File not found or deleted.")
+                return
+            old_pass = old_pass_entry.get()
+            if hashlib.sha256(old_pass.encode()).hexdigest() != f['file_pass_hash']:
+                messagebox.showerror("Error", "Wrong file password.")
+                return
+            new_pass1 = new_pass1_entry.get()
+            new_pass2 = new_pass2_entry.get()
+            if new_pass1 != new_pass2 or new_pass1 == '':
+                messagebox.showerror("Error", "Passwords do not match or are empty.")
+                return
+            data = self.decrypt_file_content(f['content'], old_pass)
+            if data is None:
+                messagebox.showerror("Error", "Cannot decrypt file with old password.")
+                return
+            new_encrypted = self.encrypt_file_content(data, new_pass1)
+            f['content'] = new_encrypted
+            f['file_pass_hash'] = hashlib.sha256(new_pass1.encode()).hexdigest()
+            self.write_superblock()
+            messagebox.showinfo("Success", "File password changed.")
+            dialog.destroy()
 
+        tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
 def main():
-    print_random_ascii_art()
-    fs = MyFS()
-    fs.run()
-
-
+    root = tk.Tk()
+    root.geometry("1x1+3000+3000")
+    app = MyFS(root)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
