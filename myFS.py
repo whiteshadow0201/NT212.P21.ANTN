@@ -15,7 +15,7 @@ from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
 
-MYFS_FILE = 'MyFS.DRI'
+# MYFS_FILE = 'MyFS.DRI'
 BLOCK_SIZE = 16  # AES block size
 
 def pad(data):
@@ -95,13 +95,14 @@ def get_bios_uuid():
 
 
 class MyFS:
-    def __init__(self, root):
+    def __init__(self, root, volume_path):
         self.root = root
+        self.volume_path = volume_path
         self.volume_password = None
         self.key = None
         self.superblock_key = None
         self.superblock = None
-        if not os.path.isfile(MYFS_FILE):
+        if not os.path.isfile(self.volume_path):
             self.format_volume()
         else:
             self.load_volume()
@@ -153,9 +154,10 @@ class MyFS:
                 'bios_uuid': get_bios_uuid(),
                 'totp_secret': totp_secret
             }
+            volume_name = os.path.basename(self.volume_path)
             totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
-                name="MyFS Volume",
-                issuer_name="MyFS"
+                name=volume_name,
+                issuer_name=volume_name
             )
             qr = qrcode.QRCode(version=1, box_size=10, border=4)
             qr.add_data(totp_uri)
@@ -217,7 +219,7 @@ class MyFS:
         sb_bytes = json.dumps(self.superblock).encode('utf-8')
         encrypted = aes_encrypt(sb_bytes, self.superblock_key)
         sb_hash = hashlib.sha256(encrypted).hexdigest()
-        with open(MYFS_FILE, 'wb') as f:
+        with open(self.volume_path, 'wb') as f:
             f.write(sb_hash.encode('utf-8'))
             f.write(encrypted)
 
@@ -268,7 +270,7 @@ class MyFS:
                 return
 
             try:
-                with open(MYFS_FILE, 'rb') as f:
+                with open(self.volume_path, 'rb') as f:
                     sb_hash = f.read(64).decode('utf-8')
                     encrypted = f.read()
                 check_hash = hashlib.sha256(encrypted).hexdigest()
@@ -759,8 +761,22 @@ class MyFS:
 
 def main():
     root = tk.Tk()
+    root.withdraw()
+
+    volume_path = filedialog.asksaveasfilename(
+        title="Choose or Create DRI Volume File",
+        defaultextension=".DRI",
+        filetypes=[("MyFS Volume", "*.DRI")],
+        initialfile="MyVolume"
+    )
+
+    if not volume_path:
+        messagebox.showerror("Error", "No volume file selected.")
+        sys.exit()
+
     root.geometry("1x1+3000+3000")
-    app = MyFS(root)
+    app = MyFS(root, volume_path)
+    root.deiconify()
     root.mainloop()
 
 if __name__ == "__main__":
