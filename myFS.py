@@ -15,33 +15,25 @@ from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
 
-BLOCK_SIZE = 16  # AES block size
+BLOCK_SIZE = 16  # For compatibility with existing code, though not used for GCM
+NONCE_SIZE = 12  # Recommended nonce size for AES-GCM
 
-def pad(data):
-    pad_len = BLOCK_SIZE - len(data) % BLOCK_SIZE
-    return data + bytes([pad_len]) * pad_len
-
-def unpad(data):
-    pad_len = data[-1]
-    if pad_len < 1 or pad_len > BLOCK_SIZE:
-        raise ValueError("Invalid padding")
-    return data[:-pad_len]
 
 def derive_key(password):
     return hashlib.sha256(password.encode('utf-8')).digest()
 
 def aes_encrypt(data_bytes, key):
-    iv = get_random_bytes(BLOCK_SIZE)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    ciphertext = cipher.encrypt(pad(data_bytes))
-    return iv + ciphertext
+    nonce = get_random_bytes(NONCE_SIZE)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(data_bytes)
+    return nonce + ciphertext + tag  # Nonce + Ciphertext + Tag (16 bytes)
 
 def aes_decrypt(enc_bytes, key):
-    iv = enc_bytes[:BLOCK_SIZE]
-    ciphertext = enc_bytes[BLOCK_SIZE:]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    padded = cipher.decrypt(ciphertext)
-    return unpad(padded)
+    nonce = enc_bytes[:NONCE_SIZE]
+    tag = enc_bytes[-16:]  # Last 16 bytes are the authentication tag
+    ciphertext = enc_bytes[NONCE_SIZE:-16]
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ciphertext, tag)
 
 def get_bios_uuid():
     system = platform.system().lower()
@@ -268,7 +260,6 @@ class MyFS:
                     encrypted_metadata = f.read()
                 metadata_bytes = aes_decrypt(encrypted_metadata, derive_key(pwd))
                 self.metadata = json.loads(metadata_bytes.decode('utf-8'))
-                # Retrieve superblock_key from metadata
                 if 'superblock_key' not in self.metadata:
                     messagebox.showerror("Error", "Superblock key not found in key file.")
                     return
@@ -328,12 +319,13 @@ class MyFS:
 
     def encrypt_file_content(self, data_bytes, file_password):
         key = derive_key(file_password)
-        return aes_encrypt(data_bytes, key).hex()
+        encrypted = aes_encrypt(data_bytes, key)
+        return encrypted.hex()  # Store nonce + ciphertext + tag as hex
 
     def decrypt_file_content(self, encrypted_hex, file_password):
         key = derive_key(file_password)
-        encrypted_bytes = bytes.fromhex(encrypted_hex)
         try:
+            encrypted_bytes = bytes.fromhex(encrypted_hex)
             return aes_decrypt(encrypted_bytes, key)
         except Exception:
             return None
@@ -693,7 +685,6 @@ class MyFS:
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
             new_password_key = derive_key(new_pass1)
-            # Re-encrypt metadata and superblock_key with new password
             metadata_bytes = json.dumps(self.metadata).encode('utf-8')
             encrypted_metadata = aes_encrypt(metadata_bytes, new_password_key)
             try:
@@ -708,7 +699,6 @@ class MyFS:
             dialog.destroy()
 
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
-
     def change_file_password(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Change File Password")
