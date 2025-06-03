@@ -145,9 +145,9 @@ class MyFS:
 
             totp_secret = pyotp.random_base32()
             self.superblock = {
-                'files': [],
                 'bios_uuid': get_bios_uuid(),
-                'totp_secret': totp_secret
+                'totp_secret': totp_secret,
+                'files': []
             }
             volume_name = os.path.basename(self.volume_path)
             totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
