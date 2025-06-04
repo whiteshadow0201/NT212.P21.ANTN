@@ -157,13 +157,13 @@ class MyFS:
             key = hash_secret_raw(
                 secret=password.encode('utf-8'),
                 salt=salt,
-                time_cost=3,  # số vòng lặp
+                time_cost=3,  # Iterations
                 memory_cost=65536,  # 64 MiB
                 parallelism=4,
-                hash_len=32,  # chiều dài key 32 bytes
+                hash_len=32,  # Key length 32 bytes
                 type=Type.ID  # Argon2id
             )
-            return key  # Đây là bytes của key
+            return key
         except Exception as e:
             raise ValueError(f"Key derivation failed: {e}")
 
@@ -185,13 +185,13 @@ class MyFS:
             key = hash_secret_raw(
                 secret=password.encode('utf-8'),
                 salt=self.salt,
-                time_cost=3,  # số vòng lặp
+                time_cost=3,  # Iterations
                 memory_cost=65536,  # 64 MiB
                 parallelism=4,
-                hash_len=32,  # chiều dài key 32 bytes
+                hash_len=32,  # Key length 32 bytes
                 type=Type.ID  # Argon2id
             )
-            return key  # Đây là bytes của key
+            return key
         except Exception as e:
             raise ValueError(f"Key derivation failed: {e}")
 
