@@ -15,14 +15,30 @@ from PIL import Image, ImageTk
 from io import BytesIO
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error
-NONCE_SIZE = 12  # Recommended nonce size for AES-GCM
 import yaml
 
+# Constant for AES-GCM nonce size
+NONCE_SIZE = 12  # Recommended nonce size for AES-GCM in bytes
+
+
 def derive_key(password):
-    # Use Argon2id with fixed salt and configured parameters
-    with open ("secret.yaml", "r") as f:
+    """
+    Derives a 32-byte encryption key from a password using Argon2id.
+
+    Args:
+        password (str): The input password to derive the key from.
+
+    Returns:
+        bytes: The derived 32-byte key.
+
+    Raises:
+        ValueError: If key derivation fails due to Argon2 error.
+    """
+    # Load fixed salt from configuration file
+    with open("secret.yaml", "r") as f:
         secret = yaml.safe_load(f)
     salt = secret['salt'].encode()  # Fixed salt for deterministic key derivation
+    # Configure Argon2id parameters for secure key derivation
     ph = PasswordHasher(
         time_cost=3,  # Number of iterations
         memory_cost=65536,  # 64 MiB of memory
@@ -31,31 +47,64 @@ def derive_key(password):
         salt_len=len(salt)  # Match fixed salt length
     )
     try:
-        # Hash password with fixed salt
+        # Hash password with fixed salt to derive key
         hashed = ph.hash(password.encode('utf-8'), salt=salt)
-        # Extract the raw hash (32 bytes) from the Argon2 output
+        # Extract the raw 32-byte hash from Argon2 output
         return hashed.encode('utf-8')[-32:]  # Last 32 bytes are the raw hash
     except Argon2Error:
         raise ValueError("Key derivation failed")
 
+
 def aes_encrypt(data_bytes, key):
-    nonce = get_random_bytes(NONCE_SIZE)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(data_bytes)
-    return nonce + ciphertext + tag  # Nonce + Ciphertext + Tag (16 bytes)
+    """
+    Encrypts data using AES-GCM with a given key.
+
+    Args:
+        data_bytes (bytes): Data to encrypt.
+        key (bytes): 32-byte key for AES encryption.
+
+    Returns:
+        bytes: Concatenated nonce, ciphertext, and authentication tag.
+    """
+    nonce = get_random_bytes(NONCE_SIZE)  # Generate random nonce
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)  # Initialize AES-GCM cipher
+    ciphertext, tag = cipher.encrypt_and_digest(data_bytes)  # Encrypt and generate tag
+    return nonce + ciphertext + tag  # Combine nonce, ciphertext, and tag
+
 
 def aes_decrypt(enc_bytes, key):
-    nonce = enc_bytes[:NONCE_SIZE]
-    tag = enc_bytes[-16:]  # Last 16 bytes are the authentication tag
-    ciphertext = enc_bytes[NONCE_SIZE:-16]
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    return cipher.decrypt_and_verify(ciphertext, tag)
+    """
+    Decrypts data encrypted with AES-GCM.
+
+    Args:
+        enc_bytes (bytes): Encrypted data (nonce + ciphertext + tag).
+        key (bytes): 32-byte key for AES decryption.
+
+    Returns:
+        bytes: Decrypted data.
+
+    Raises:
+        Exception: If decryption or verification fails.
+    """
+    nonce = enc_bytes[:NONCE_SIZE]  # Extract nonce
+    tag = enc_bytes[-16:]  # Extract authentication tag
+    ciphertext = enc_bytes[NONCE_SIZE:-16]  # Extract ciphertext
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)  # Initialize AES-GCM cipher
+    return cipher.decrypt_and_verify(ciphertext, tag)  # Decrypt and verify tag
+
 
 def get_bios_uuid():
-    system = platform.system().lower()
+    """
+    Retrieves the system's BIOS UUID for device-specific locking.
+
+    Returns:
+        str or None: The BIOS UUID if available, else None.
+    """
+    system = platform.system().lower()  # Get operating system type
 
     try:
         if system == "windows":
+            # Query BIOS UUID using WMIC on Windows
             output = subprocess.check_output(
                 ["wmic", "csproduct", "get", "UUID"],
                 text=True
@@ -63,10 +112,12 @@ def get_bios_uuid():
             lines = [line.strip() for line in output.splitlines() if line.strip()]
             if len(lines) >= 2:
                 uuid = lines[1]
+                # Check for valid UUID
                 if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                     return uuid
 
         elif system == "linux":
+            # Query system UUID using dmidecode on Linux
             output = subprocess.check_output(
                 ["dmidecode", "-s", "system-uuid"],
                 text=True,
@@ -76,6 +127,7 @@ def get_bios_uuid():
                 return output
 
         elif system == "darwin":
+            # Query hardware UUID on macOS
             output = subprocess.check_output(
                 ["system_profiler", "SPHardwareDataType"],
                 text=True
@@ -86,37 +138,51 @@ def get_bios_uuid():
                 if uuid.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
                     return uuid
 
-    except subprocess.CalledProcessError as e:
-        pass
-    except FileNotFoundError as e:
-        pass
-    except Exception as e:
-        pass
+    except (subprocess.CalledProcessError, FileNotFoundError, Exception):
+        # Return None if UUID retrieval fails
+        return None
 
     return None
 
 
 class MyFS:
+    """
+    A class for managing an encrypted file system volume with GUI interface.
+    """
+
     def __init__(self, root, volume_path, mode='open'):
-        self.root = root
-        self.volume_path = volume_path
-        self.volume_password = None
-        self.key = None
-        self.superblock_key = None
-        self.superblock = None
-        self.metadata = None
+        """
+        Initializes the MyFS instance.
+
+        Args:
+            root (tk.Tk): The Tkinter root window.
+            volume_path (str): Path to the volume file.
+            mode (str): 'open' for existing volume, 'create' for new volume.
+        """
+        self.root = root  # Tkinter root window
+        self.volume_path = volume_path  # Path to volume file
+        self.volume_password = None  # Volume password
+        self.key = None  # Derived encryption key
+        self.superblock_key = None  # Key for superblock encryption
+        self.superblock = None  # Volume metadata (file list)
+        self.metadata = None  # Key file metadata
         if mode == 'create' or not os.path.isfile(self.volume_path):
-            self.format_volume()
+            self.format_volume()  # Create new volume
         else:
-            self.load_volume()
+            self.load_volume()  # Load existing volume
 
     def format_volume(self):
+        """
+        Formats a new volume, setting up encryption and TOTP authentication.
+        """
+        # Create dialog for volume creation
         dialog = tk.Toplevel(self.root)
         dialog.title("Format Volume")
         dialog.geometry("400x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # GUI elements for password and key file input
         tk.Label(dialog, text="Set volume password:", font=("Arial", 12)).pack(pady=10)
         pwd1_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd1_entry.pack(pady=5)
@@ -128,9 +194,11 @@ class MyFS:
         key_name_entry.pack(pady=5)
 
         def submit():
+            """Handles submission of volume creation form."""
             pwd1 = pwd1_entry.get()
             pwd2 = pwd2_entry.get()
             key_name = key_name_entry.get().strip()
+            # Validate passwords and key name
             if pwd1 != pwd2 or pwd1 == '':
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
@@ -139,32 +207,32 @@ class MyFS:
                 return
 
             self.volume_password = pwd1
-            password_key = derive_key(self.volume_password)
-            self.superblock_key = get_random_bytes(32)
+            password_key = derive_key(self.volume_password)  # Derive key from password
+            self.superblock_key = get_random_bytes(32)  # Generate superblock key
 
             # Store metadata and superblock_key in key file
-            totp_secret = pyotp.random_base32()
+            totp_secret = pyotp.random_base32()  # Generate TOTP secret
             self.metadata = {
-                'bios_uuid': get_bios_uuid(),
-                'totp_secret': totp_secret,
-                'superblock_key': self.superblock_key.hex()
+                'bios_uuid': get_bios_uuid(),  # Store device UUID
+                'totp_secret': totp_secret,  # Store TOTP secret
+                'superblock_key': self.superblock_key.hex()  # Store superblock key
             }
             metadata_bytes = json.dumps(self.metadata).encode('utf-8')
             encrypted_metadata = aes_encrypt(metadata_bytes, password_key)
 
             key_path = f"{key_name}.key"
             try:
+                # Save encrypted metadata to key file
                 with open(key_path, 'wb') as f:
                     f.write(encrypted_metadata)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save key file: {e}")
                 return
 
-            # Initialize superblock with only files
-            self.superblock = {
-                'files': []
-            }
+            # Initialize superblock with empty file list
+            self.superblock = {'files': []}
             volume_name = os.path.basename(self.volume_path)
+            # Generate TOTP URI for QR code
             totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
                 name=volume_name,
                 issuer_name=volume_name
@@ -175,17 +243,19 @@ class MyFS:
             qr_image = qr.make_image(fill_color="black", back_color="white")
 
             def on_qr_ok():
+                """Handles QR code confirmation."""
                 qr_window.destroy()
-                self.write_superblock()
+                self.write_superblock()  # Save superblock
                 messagebox.showinfo("Success", "Volume formatted and encrypted.")
                 dialog.destroy()
                 self.root.geometry("800x600+100+100")
                 self.root.deiconify()
                 self.root.lift()
                 self.root.focus_force()
-                self.show_main_menu()
+                self.show_main_menu()  # Show main menu
 
             try:
+                # Display QR code for TOTP setup
                 qr_window = tk.Toplevel(dialog)
                 qr_window.title("Scan QR Code for MyFS TOTP")
                 qr_window.geometry("900x900")
@@ -208,6 +278,7 @@ class MyFS:
                 tk.Button(qr_window, text="OK", command=on_qr_ok, font=("Arial", 12), width=10, height=1).pack(pady=10)
 
             except tk.TclError as e:
+                # Fallback if GUI is unavailable
                 qr_path = "totp_qr.png"
                 qr_image.save(qr_path)
                 messagebox.showinfo("Info",
@@ -226,21 +297,28 @@ class MyFS:
         dialog.protocol("WM_DELETE_WINDOW", lambda: dialog.destroy())
 
     def write_superblock(self):
+        """
+        Writes the encrypted superblock to the volume file with an integrity hash.
+        """
         sb_bytes = json.dumps(self.superblock).encode('utf-8')
-        encrypted = aes_encrypt(sb_bytes, self.superblock_key)
-        sb_hash = hashlib.sha256(encrypted).hexdigest()
+        encrypted = aes_encrypt(sb_bytes, self.superblock_key)  # Encrypt superblock
+        sb_hash = hashlib.sha256(encrypted).hexdigest()  # Compute hash for integrity
         with open(self.volume_path, 'wb') as f:
-            f.write(sb_hash.encode('utf-8'))
-            f.write(encrypted)
+            f.write(sb_hash.encode('utf-8'))  # Write hash
+            f.write(encrypted)  # Write encrypted superblock
 
     def load_volume(self):
+        """
+        Loads and decrypts an existing volume, verifying integrity and TOTP.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Unlock Volume")
         dialog.geometry("400x400")
         dialog.transient(self.root)
         dialog.grab_set()
-        attempts = [0]
+        attempts = [0]  # Track password attempts
 
+        # GUI elements for password, key file, and TOTP input
         tk.Label(dialog, text="Enter volume password:", font=("Arial", 12)).pack(pady=10)
         pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
@@ -263,15 +341,18 @@ class MyFS:
         totp_entry.pack(pady=5)
 
         def submit():
+            """Handles volume unlock submission."""
             pwd = pwd_entry.get()
             key_path = key_path_entry.get()
             totp_code = totp_entry.get()
             attempts[0] += 1
 
+            # Validate key file existence
             if not os.path.isfile(key_path):
                 messagebox.showerror("Error", "MyFS.key not found.")
                 return
             try:
+                # Read and decrypt metadata from key file
                 with open(key_path, 'rb') as f:
                     encrypted_metadata = f.read()
                 metadata_bytes = aes_decrypt(encrypted_metadata, derive_key(pwd))
@@ -285,6 +366,7 @@ class MyFS:
                 return
 
             try:
+                # Read and verify volume integrity
                 with open(self.volume_path, 'rb') as f:
                     sb_hash = f.read(64).decode('utf-8')
                     encrypted = f.read()
@@ -294,16 +376,19 @@ class MyFS:
                     dialog.destroy()
                     self.root.quit()
                     return
+                # Decrypt superblock
                 decrypted = aes_decrypt(encrypted, self.superblock_key)
                 self.superblock = json.loads(decrypted.decode('utf-8'))
                 current_bios_uuid = get_bios_uuid()
 
+                # Verify BIOS UUID for device locking
                 if 'bios_uuid' not in self.metadata or self.metadata['bios_uuid'] != current_bios_uuid:
                     messagebox.showerror("Error",
                                          "This volume can only be accessed on the machine where it was created.")
                     dialog.destroy()
                     self.root.quit()
                     return
+                # Verify TOTP code
                 if 'totp_secret' in self.metadata:
                     totp = pyotp.TOTP(self.metadata['totp_secret'])
                     if not totp.verify(totp_code):
@@ -315,16 +400,17 @@ class MyFS:
                     self.root.quit()
                     return
                 self.volume_password = pwd
-                self.key = derive_key(pwd)
+                self.key = derive_key(pwd)  # Derive volume key
                 messagebox.showinfo("Success", "Welcome to MyFS.")
                 dialog.destroy()
                 self.root.geometry("800x600+100+100")
                 self.root.deiconify()
                 self.root.lift()
                 self.root.focus_force()
-                self.show_main_menu()
+                self.show_main_menu()  # Show main menu
             except Exception:
                 messagebox.showerror("Error", "Decryption failed or invalid TOTP code.")
+                # Enforce maximum password attempts
                 if attempts[0] >= 3:
                     messagebox.showerror("Error", "Too many wrong password attempts.")
                     dialog.destroy()
@@ -334,11 +420,31 @@ class MyFS:
         dialog.protocol("WM_DELETE_WINDOW", lambda: sys.exit())
 
     def encrypt_file_content(self, data_bytes, file_password):
+        """
+        Encrypts file content using AES-GCM with a derived key.
+
+        Args:
+            data_bytes (bytes): File content to encrypt.
+            file_password (str): Password for file encryption.
+
+        Returns:
+            str: Hex-encoded encrypted data (nonce + ciphertext + tag).
+        """
         key = derive_key(file_password)
         encrypted = aes_encrypt(data_bytes, key)
-        return encrypted.hex()  # Store nonce + ciphertext + tag as hex
+        return encrypted.hex()  # Store as hex string
 
     def decrypt_file_content(self, encrypted_hex, file_password):
+        """
+        Decrypts file content encrypted with AES-GCM.
+
+        Args:
+            encrypted_hex (str): Hex-encoded encrypted data.
+            file_password (str): Password for decryption.
+
+        Returns:
+            bytes or None: Decrypted data, or None if decryption fails.
+        """
         key = derive_key(file_password)
         try:
             encrypted_bytes = bytes.fromhex(encrypted_hex)
@@ -347,11 +453,15 @@ class MyFS:
             return None
 
     def show_main_menu(self):
+        """
+        Displays the main menu with file management options.
+        """
         for widget in self.root.winfo_children():
-            widget.destroy()
+            widget.destroy()  # Clear existing widgets
         self.root.title("Encrypted Volume Manager")
         self.root.geometry("600x500")
         tk.Label(self.root, text="Encrypted Volume Manager", font=("Arial", 14, "bold")).pack(pady=20)
+        # Define menu buttons
         buttons = [
             ("List Files", self.list_files),
             ("Import File", self.import_file),
@@ -367,6 +477,9 @@ class MyFS:
             tk.Button(self.root, text=text, command=command, font=("Arial", 12), width=20, height=1).pack(pady=5)
 
     def list_files(self):
+        """
+        Displays a list of non-deleted files in the volume.
+        """
         files = [f for f in self.superblock['files'] if not f['deleted']]
         dialog = tk.Toplevel(self.root)
         dialog.title("List Files")
@@ -376,6 +489,7 @@ class MyFS:
         if not files:
             tk.Label(dialog, text="No files in volume.", font=("Arial", 12)).pack(pady=20)
         else:
+            # Display file list in a text widget
             text = tk.Text(dialog, height=10, width=70, font=("Arial", 12))
             text.pack(pady=10)
             for f in files:
@@ -384,12 +498,16 @@ class MyFS:
         tk.Button(dialog, text="Close", command=dialog.destroy, font=("Arial", 12), width=10, height=1).pack(pady=10)
 
     def import_file(self):
+        """
+        Imports a file into the volume with encryption.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Import File")
         dialog.geometry("400x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # GUI elements for file selection and password
         tk.Label(dialog, text="Select file to import:", font=("Arial", 12)).pack(pady=10)
         file_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         file_path_entry.pack(pady=5)
@@ -412,9 +530,11 @@ class MyFS:
         pwd2_entry.pack(pady=5)
 
         def submit():
+            """Handles file import submission."""
             path = file_path_entry.get()
             file_pass = pwd1_entry.get()
             file_pass2 = pwd2_entry.get()
+            # Validate inputs
             if not os.path.isfile(path):
                 messagebox.showerror("Error", "File not found.")
                 return
@@ -422,19 +542,21 @@ class MyFS:
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
             try:
+                # Read file content
                 with open(path, 'rb') as f:
                     data = f.read()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to read file: {e}")
                 return
+            # Encrypt and store file metadata
             encrypted_content = self.encrypt_file_content(data, file_pass)
             file_id = 1 + max([f['id'] for f in self.superblock['files']] or [0])
             file_entry = {
                 'id': file_id,
                 'name': os.path.basename(path),
                 'deleted': False,
-                'content': encrypted_content,
-                'file_pass_hash': hashlib.sha256(file_pass.encode()).hexdigest()
+                'file_pass_hash': hashlib.sha256(file_pass.encode()).hexdigest(),
+                'content': encrypted_content
             }
             self.superblock['files'].append(file_entry)
             self.write_superblock()
@@ -444,12 +566,16 @@ class MyFS:
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def export_file(self):
+        """
+        Exports a file from the volume after decryption.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Export File")
         dialog.geometry("700x600")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # Display available files
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -461,14 +587,13 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
+        # GUI elements for file ID, password, and output path
         tk.Label(dialog, text="File ID to export:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
-
         tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
         pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
-
         tk.Label(dialog, text="Export file path:", font=("Arial", 12)).pack(pady=10)
         out_path_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         out_path_entry.pack(pady=5)
@@ -485,6 +610,7 @@ class MyFS:
         ).pack(pady=5)
 
         def submit():
+            """Handles file export submission."""
             try:
                 fid = int(fid_entry.get())
             except ValueError:
@@ -504,6 +630,7 @@ class MyFS:
                 return
             out_path = out_path_entry.get()
             try:
+                # Write decrypted file to output path
                 with open(out_path, 'wb') as f:
                     f.write(data)
                 messagebox.showinfo("Success", "File exported.")
@@ -514,12 +641,16 @@ class MyFS:
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def delete_file(self):
+        """
+        Marks a file as deleted in the volume (soft delete).
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Delete File")
         dialog.geometry("600x500")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # Display available files
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -531,15 +662,16 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
+        # GUI elements for file ID and password
         tk.Label(dialog, text="File ID to delete:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
-
         tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
         pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
 
         def submit():
+            """Handles file deletion submission."""
             try:
                 fid = int(fid_entry.get())
             except ValueError:
@@ -553,7 +685,7 @@ class MyFS:
             if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
                 messagebox.showerror("Error", "Wrong file password.")
                 return
-            f['deleted'] = True
+            f['deleted'] = True  # Mark file as deleted
             self.write_superblock()
             messagebox.showinfo("Success", "File deleted.")
             dialog.destroy()
@@ -561,12 +693,16 @@ class MyFS:
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def permanently_delete_file(self):
+        """
+        Permanently deletes a file by overwriting its data and removing it.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Permanently Delete File")
         dialog.geometry("600x500")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # Display available files
         files = [f for f in self.superblock['files'] if not f['deleted']]
         tk.Label(dialog, text="Available Files:", font=("Arial", 12, "bold")).pack(pady=5)
         if not files:
@@ -578,15 +714,16 @@ class MyFS:
                 text.insert(tk.END, f"ID:{f['id']} Name:{f['name']} Deleted:{f['deleted']}\n")
             text.config(state='disabled')
 
+        # GUI elements for file ID and password
         tk.Label(dialog, text="File ID to permanently delete:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
-
         tk.Label(dialog, text="Enter file password:", font=("Arial", 12)).pack(pady=10)
         pwd_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         pwd_entry.pack(pady=5)
 
         def submit():
+            """Handles permanent file deletion submission."""
             try:
                 fid = int(fid_entry.get())
             except ValueError:
@@ -600,8 +737,10 @@ class MyFS:
             if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
                 messagebox.showerror("Error", "Wrong file password.")
                 return
+            # Overwrite file content with zeros
             f['content'] = '00' * (len(f['content']) // 2)
             f['file_pass_hash'] = '0' * 64
+            # Remove file from superblock
             self.superblock['files'] = [file for file in self.superblock['files'] if file['id'] != fid]
             self.write_superblock()
             messagebox.showinfo("Success", "File permanently deleted and data overwritten with null bytes.")
@@ -610,6 +749,9 @@ class MyFS:
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def restore_file(self):
+        """
+        Restores a previously soft-deleted file.
+        """
         deleted_files = [f for f in self.superblock['files'] if f['deleted']]
         if not deleted_files:
             messagebox.showinfo("Info", "No deleted files available to restore.")
@@ -620,6 +762,7 @@ class MyFS:
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # Display deleted files
         tk.Label(dialog, text="Deleted files available for restoration:", font=("Arial", 12)).pack(pady=10)
         text = tk.Text(dialog, height=10, width=70, font=("Arial", 12))
         text.pack(pady=10)
@@ -634,6 +777,7 @@ class MyFS:
         pwd_entry.pack(pady=5)
 
         def submit():
+            """Handles file restoration submission."""
             try:
                 fid = int(fid_entry.get())
             except ValueError:
@@ -647,11 +791,12 @@ class MyFS:
             if hashlib.sha256(file_pass.encode()).hexdigest() != f['file_pass_hash']:
                 messagebox.showerror("Error", "Wrong file password.")
                 return
+            # Verify file content integrity
             data = self.decrypt_file_content(f['content'], file_pass)
             if data is None:
                 messagebox.showerror("Error", "Cannot decrypt file, content may be corrupted.")
                 return
-            f['deleted'] = False
+            f['deleted'] = False  # Restore file
             self.write_superblock()
             messagebox.showinfo("Success", "File restored.")
             dialog.destroy()
@@ -659,12 +804,16 @@ class MyFS:
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
     def set_volume_password(self):
+        """
+        Changes the volume password and updates the key file.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Volume Password")
         dialog.geometry("400x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # GUI elements for password change
         tk.Label(dialog, text="Enter current volume password:", font=("Arial", 12)).pack(pady=10)
         old_pass_entry = tk.Entry(dialog, show="*", width=30, font=("Arial", 14))
         old_pass_entry.pack(pady=5)
@@ -690,6 +839,7 @@ class MyFS:
         ).pack(pady=5)
 
         def submit():
+            """Handles volume password change submission."""
             old_pass = old_pass_entry.get()
             if old_pass != self.volume_password:
                 messagebox.showerror("Error", "Wrong password.")
@@ -700,10 +850,12 @@ class MyFS:
             if new_pass1 != new_pass2 or new_pass1 == '':
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
+            # Encrypt metadata with new password
             new_password_key = derive_key(new_pass1)
             metadata_bytes = json.dumps(self.metadata).encode('utf-8')
             encrypted_metadata = aes_encrypt(metadata_bytes, new_password_key)
             try:
+                # Save updated key file
                 with open(key_path, 'wb') as f:
                     f.write(encrypted_metadata)
             except Exception as e:
@@ -715,13 +867,18 @@ class MyFS:
             dialog.destroy()
 
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
+
     def change_file_password(self):
+        """
+        Changes the password for a specific file in the volume.
+        """
         dialog = tk.Toplevel(self.root)
         dialog.title("Change File Password")
         dialog.geometry("400x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
+        # GUI elements for file ID and password change
         tk.Label(dialog, text="File ID to change password:", font=("Arial", 12)).pack(pady=10)
         fid_entry = tk.Entry(dialog, width=30, font=("Arial", 14))
         fid_entry.pack(pady=5)
@@ -736,6 +893,7 @@ class MyFS:
         new_pass2_entry.pack(pady=5)
 
         def submit():
+            """Handles file password change submission."""
             try:
                 fid = int(fid_entry.get())
             except ValueError:
@@ -754,6 +912,7 @@ class MyFS:
             if new_pass1 != new_pass2 or new_pass1 == '':
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
+            # Decrypt and re-encrypt file with new password
             data = self.decrypt_file_content(f['content'], old_pass)
             if data is None:
                 messagebox.showerror("Error", "Cannot decrypt file with old password.")
@@ -767,13 +926,21 @@ class MyFS:
 
         tk.Button(dialog, text="Submit", command=submit, font=("Arial", 12), width=10, height=1).pack(pady=20)
 
-def choose_or_create_volume():
-    root = tk.Tk()
-    root.withdraw()
 
-    choice = show_choice_window(root)
+def choose_or_create_volume():
+    """
+    Prompts user to choose between opening or creating a volume.
+
+    Returns:
+        tuple: (Tk root, volume path, mode).
+    """
+    root = tk.Tk()
+    root.withdraw()  # Hide root window
+
+    choice = show_choice_window(root)  # Show choice dialog
 
     if choice == 'open':
+        # Prompt for existing volume file
         volume_path = filedialog.askopenfilename(
             title="Select existing DRI Volume",
             defaultextension=".DRI",
@@ -785,6 +952,7 @@ def choose_or_create_volume():
         mode = 'open'
 
     elif choice == 'create':
+        # Prompt for new volume file creation
         volume_path = filedialog.asksaveasfilename(
             title="Create new DRI Volume File",
             defaultextension=".DRI",
@@ -802,7 +970,17 @@ def choose_or_create_volume():
 
     return root, volume_path, mode
 
+
 def show_choice_window(parent):
+    """
+    Displays a dialog for choosing to open or create a volume.
+
+    Args:
+        parent (tk.Tk): Parent Tkinter window.
+
+    Returns:
+        str: User's choice ('open', 'create', or 'cancel').
+    """
     choice_window = tk.Toplevel(parent)
     choice_window.title("Choose Action")
     choice_window.geometry("300x130")
@@ -823,15 +1001,13 @@ def show_choice_window(parent):
         choice['value'] = 'cancel'
         choice_window.destroy()
 
+    # GUI elements for choice selection
     label = tk.Label(choice_window, text="Do you want to open or create a volume?")
     label.pack(pady=10)
-
     btn_open = tk.Button(choice_window, text="Open existing volume", width=25, command=select_open)
     btn_open.pack(pady=2)
-
     btn_create = tk.Button(choice_window, text="Create new volume", width=25, command=select_create)
     btn_create.pack(pady=2)
-
     btn_cancel = tk.Button(choice_window, text="Cancel", width=25, command=select_cancel)
     btn_cancel.pack(pady=2)
 
@@ -841,11 +1017,12 @@ def show_choice_window(parent):
 
 
 def main():
-    root, volume_path, mode = choose_or_create_volume()
-    root.geometry("1x1+3000+3000")
-    app = MyFS(root, volume_path, mode)
-    root.deiconify()
-    root.mainloop()
+    root, volume_path, mode = choose_or_create_volume()  # Get volume details
+    root.geometry("1x1+3000+3000")  # Minimize window initially
+    app = MyFS(root, volume_path, mode)  # Initialize MyFS
+    root.deiconify()  # Show window
+    root.mainloop()  # Start Tkinter event loop
+
 
 if __name__ == "__main__":
     main()
