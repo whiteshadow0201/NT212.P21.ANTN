@@ -15,7 +15,6 @@ from PIL import Image, ImageTk
 from io import BytesIO
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error
-BLOCK_SIZE = 16  # For compatibility with existing code, though not used for GCM
 NONCE_SIZE = 12  # Recommended nonce size for AES-GCM
 import yaml
 
