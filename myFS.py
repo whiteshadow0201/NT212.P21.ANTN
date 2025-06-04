@@ -13,46 +13,11 @@ import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 from io import BytesIO
-from argon2 import PasswordHasher
-from argon2.exceptions import Argon2Error
-import yaml
-
+from os import urandom
+from argon2.low_level import hash_secret_raw, Type
 # Constant for AES-GCM nonce size
 NONCE_SIZE = 12  # Recommended nonce size for AES-GCM in bytes
-
-
-def derive_key(password):
-    """
-    Derives a 32-byte encryption key from a password using Argon2id.
-
-    Args:
-        password (str): The input password to derive the key from.
-
-    Returns:
-        bytes: The derived 32-byte key.
-
-    Raises:
-        ValueError: If key derivation fails due to Argon2 error.
-    """
-    # Load fixed salt from configuration file
-    with open("secret.yaml", "r") as f:
-        secret = yaml.safe_load(f)
-    salt = secret['salt'].encode()  # Fixed salt for deterministic key derivation
-    # Configure Argon2id parameters for secure key derivation
-    ph = PasswordHasher(
-        time_cost=3,  # Number of iterations
-        memory_cost=65536,  # 64 MiB of memory
-        parallelism=4,  # Number of parallel threads
-        hash_len=32,  # Output 32 bytes for AES-256
-        salt_len=len(salt)  # Match fixed salt length
-    )
-    try:
-        # Hash password with fixed salt to derive key
-        hashed = ph.hash(password.encode('utf-8'), salt=salt)
-        # Extract the raw 32-byte hash from Argon2 output
-        return hashed.encode('utf-8')[-32:]  # Last 32 bytes are the raw hash
-    except Argon2Error:
-        raise ValueError("Key derivation failed")
+SALT_LENGTH = 16
 
 
 def aes_encrypt(data_bytes, key):
@@ -165,11 +130,70 @@ class MyFS:
         self.key = None  # Derived encryption key
         self.superblock_key = None  # Key for superblock encryption
         self.superblock = None  # Volume metadata (file list)
-        self.metadata = None  # Key file metadata
+        self.metadata = None  # Key file
+        self.salt = None
         if mode == 'create' or not os.path.isfile(self.volume_path):
             self.format_volume()  # Create new volume
         else:
             self.load_volume()  # Load existing volume
+
+    def create_key(self, password):
+        """
+        Create a 32-byte encryption key from a password using Argon2id.
+
+        Args:
+            password (str): The input password to derive the key from.
+
+        Returns:
+            bytes: The derived 32-byte key.
+
+        Raises:
+            ValueError: If key derivation fails due to Argon2 error.
+        """
+        salt = urandom(SALT_LENGTH)
+        self.salt = salt
+
+        try:
+            key = hash_secret_raw(
+                secret=password.encode('utf-8'),
+                salt=salt,
+                time_cost=3,  # số vòng lặp
+                memory_cost=65536,  # 64 MiB
+                parallelism=4,
+                hash_len=32,  # chiều dài key 32 bytes
+                type=Type.ID  # Argon2id
+            )
+            return key  # Đây là bytes của key
+        except Exception as e:
+            raise ValueError(f"Key derivation failed: {e}")
+
+
+    def derive_key(self, password):
+        """
+        Derives a 32-byte encryption key from a password using Argon2id.
+
+        Args:
+            password (str): The input password to derive the key from.
+
+        Returns:
+            bytes: The derived 32-byte key.
+
+        Raises:
+            ValueError: If key derivation fails due to Argon2 error.
+        """
+        try:
+            key = hash_secret_raw(
+                secret=password.encode('utf-8'),
+                salt=self.salt,
+                time_cost=3,  # số vòng lặp
+                memory_cost=65536,  # 64 MiB
+                parallelism=4,
+                hash_len=32,  # chiều dài key 32 bytes
+                type=Type.ID  # Argon2id
+            )
+            return key  # Đây là bytes của key
+        except Exception as e:
+            raise ValueError(f"Key derivation failed: {e}")
 
     def format_volume(self):
         """
@@ -207,24 +231,37 @@ class MyFS:
                 return
 
             self.volume_password = pwd1
-            password_key = derive_key(self.volume_password)  # Derive key from password
+            password_key = self.create_key(self.volume_password)  # Derive key from password
             self.superblock_key = get_random_bytes(32)  # Generate superblock key
 
             # Store metadata and superblock_key in key file
             totp_secret = pyotp.random_base32()  # Generate TOTP secret
-            self.metadata = {
+            metadata_dict = {
                 'bios_uuid': get_bios_uuid(),  # Store device UUID
                 'totp_secret': totp_secret,  # Store TOTP secret
-                'superblock_key': self.superblock_key.hex()  # Store superblock key
+                'superblock_key': self.superblock_key.hex(),  # Store superblock key
             }
-            metadata_bytes = json.dumps(self.metadata).encode('utf-8')
-            encrypted_metadata = aes_encrypt(metadata_bytes, password_key)
+
+            # Convert dictionary to JSON string, then to bytes
+            metadata_json_bytes = json.dumps(metadata_dict).encode('utf-8')
+
+            # Encrypt the JSON bytes
+            encrypted_metadata = aes_encrypt(metadata_json_bytes, password_key)
+
+            # Build the final metadata structure
+            real_metadata = {
+                'encrypted_metadata': encrypted_metadata.hex(),  # Convert to hex for JSON compatibility
+                'salt': self.salt.hex()  # Optional: hex for consistency if self.salt is bytes
+            }
+
+            # Serialize the final structure to bytes for storage
+            encrypted_metadata_bytes = json.dumps(real_metadata).encode('utf-8')
 
             key_path = f"{key_name}.key"
             try:
                 # Save encrypted metadata to key file
                 with open(key_path, 'wb') as f:
-                    f.write(encrypted_metadata)
+                    f.write(encrypted_metadata_bytes)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save key file: {e}")
                 return
@@ -354,8 +391,15 @@ class MyFS:
             try:
                 # Read and decrypt metadata from key file
                 with open(key_path, 'rb') as f:
-                    encrypted_metadata = f.read()
-                metadata_bytes = aes_decrypt(encrypted_metadata, derive_key(pwd))
+                    file_content = f.read()
+
+                # Decode JSON từ bytes -> dict
+                real_metadata = json.loads(file_content.decode('utf-8'))
+
+                # Tách salt và encrypted metadata
+                self.salt = bytes.fromhex(real_metadata['salt'])
+                encrypted_metadata = bytes.fromhex(real_metadata['encrypted_metadata'])
+                metadata_bytes = aes_decrypt(encrypted_metadata, self.derive_key(pwd))
                 self.metadata = json.loads(metadata_bytes.decode('utf-8'))
                 if 'superblock_key' not in self.metadata:
                     messagebox.showerror("Error", "Superblock key not found in key file.")
@@ -400,7 +444,7 @@ class MyFS:
                     self.root.quit()
                     return
                 self.volume_password = pwd
-                self.key = derive_key(pwd)  # Derive volume key
+                self.key = self.derive_key(pwd)  # Derive volume key
                 messagebox.showinfo("Success", "Welcome to MyFS.")
                 dialog.destroy()
                 self.root.geometry("800x600+100+100")
@@ -430,7 +474,7 @@ class MyFS:
         Returns:
             str: Hex-encoded encrypted data (nonce + ciphertext + tag).
         """
-        key = derive_key(file_password)
+        key = self.derive_key(file_password)
         encrypted = aes_encrypt(data_bytes, key)
         return encrypted.hex()  # Store as hex string
 
@@ -445,7 +489,7 @@ class MyFS:
         Returns:
             bytes or None: Decrypted data, or None if decryption fails.
         """
-        key = derive_key(file_password)
+        key = self.derive_key(file_password)
         try:
             encrypted_bytes = bytes.fromhex(encrypted_hex)
             return aes_decrypt(encrypted_bytes, key)
@@ -851,7 +895,7 @@ class MyFS:
                 messagebox.showerror("Error", "Passwords do not match or are empty.")
                 return
             # Encrypt metadata with new password
-            new_password_key = derive_key(new_pass1)
+            new_password_key = self.derive_key(new_pass1)
             metadata_bytes = json.dumps(self.metadata).encode('utf-8')
             encrypted_metadata = aes_encrypt(metadata_bytes, new_password_key)
             try:
